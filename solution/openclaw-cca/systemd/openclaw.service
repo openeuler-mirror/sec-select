@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenClaw LLM Gateway
+After=openclaw-luks-unlock.service
+Requires=openclaw-luks-unlock.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/openclaw-cca/config
+
+# 部署时填写
+Environment="OPENCLAW_HOME=REPLACE_ME"
+
+ExecStart=/bin/sh -c 'exec "$OPENCLAW_BIN" --config "$OPENCLAW_HOME/openclaw.json"'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

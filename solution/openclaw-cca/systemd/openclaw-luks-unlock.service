@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenClaw LUKS Unlock via RBC Attestation
+DefaultDependencies=no
+After=local-fs.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# 部署时填写
+Environment="KEY_URI=REPLACE_ME"
+Environment="DEVICE=REPLACE_ME"
+Environment="MOUNT_POINT=REPLACE_ME"
+
+ExecStart=/usr/local/sbin/openclaw-rbc-unlock.sh --open ${KEY_URI} ${DEVICE} ${MOUNT_POINT}
+
+[Install]
+WantedBy=multi-user.target
