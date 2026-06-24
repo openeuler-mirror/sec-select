@@ -1,0 +1,37 @@
+[package]
+name = "secafs-sdk"
+version = "0.6.0"
+edition = "2021"
+description = "SecAFS SDK for Rust (PostgreSQL only)"
+license = "MulanPSL-2.0"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+libc = "0.2"
+thiserror = "1.0"
+lru = "0.12"
+tracing = "0.1"
+tokio-postgres = { version = "0.7", features = ["with-uuid-1"] }
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1.4"
+tokio-test = "0.4"
+uuid = { version = "1", features = ["v4"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
+rand = "0.8"
+
+[[bench]]
+name = "overlayfs"
+harness = false
+
+[[bench]]
+name = "workload"
+harness = false
+
+[profile.bench]
+debug = true

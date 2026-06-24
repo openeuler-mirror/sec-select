@@ -1,0 +1,43 @@
+# SecAFS 开发环境 — OpenGauss（默认）或 PostgreSQL（二选一）
+#
+# 用法:
+#   ./scripts/dev-up.sh              # 默认启动 OpenGauss
+#   ./scripts/dev-up.sh postgres     # 启动 PostgreSQL
+#
+# 两者端口均映射到 5433，不可同时启动。
+# 裸 `docker compose -f docker-compose.dev.yml up`（default profile）启动 OpenGauss。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: secafs
+      POSTGRES_PASSWORD: secafs
+      POSTGRES_DB: secafs
+    ports: ["5433:5432"]
+    volumes:
+      - ./.dev-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "secafs"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  opengauss:
+    image: enmotech/opengauss:6.0.0
+    restart: unless-stopped
+    profiles: ["opengauss", "default"]
+    privileged: true
+    environment:
+      GS_USERNAME: secafs
+      GS_PASSWORD: "Secafs!123"
+    ports: ["5433:5432"]
+    volumes:
+      - ./.dev-ogdata:/var/lib/opengauss/data
+      - ./scripts/opengauss-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "export LD_LIBRARY_PATH=/usr/local/opengauss/lib && /usr/local/opengauss/bin/gsql -d postgres -p 5432 -U secafs -W Secafs!123 -c 'SELECT 1' > /dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30

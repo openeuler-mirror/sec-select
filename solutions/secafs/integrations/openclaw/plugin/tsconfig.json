@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["./*.ts", "./src/**/*.ts"],
+  "exclude": ["./dist/**", "./node_modules/**", "./**/*.test.ts", "./live-e2e.test.ts"]
+}

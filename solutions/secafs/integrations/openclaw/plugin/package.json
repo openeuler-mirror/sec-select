@@ -1,0 +1,29 @@
+{
+  "name": "secafs-chat",
+  "version": "2026.4.20",
+  "private": true,
+  "description": "OpenClaw plugin: per-conversation FUSE-mounted workspace backed by SecAFS",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/index.js",
+    "test": "vitest run src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.6.8-alpha.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "openclaw": "^2026.6.1",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  },
+  "openclaw": {
+    "bundle": {
+      "stageRuntimeDependencies": true
+    },
+    "extensions": [
+      "./dist/index.js"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Editor / tool directories
+.vscode/
+.cursor/
+.claude/
+
+# Environment & secrets
+.env
+
+# Python caches
+__pycache__/
+
+# SecAFS runtime & local dev database volumes
+.secafs/
+.venv-secafs/
+.dev-pgdata/
+.dev-ogdata/
