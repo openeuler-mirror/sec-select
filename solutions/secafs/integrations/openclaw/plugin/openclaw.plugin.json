@@ -1,0 +1,32 @@
+{
+  "id": "secafs-chat",
+  "name": "SecAFS Chat",
+  "description": "Per-conversation FUSE-mounted workspace backed by SecAFS.",
+  "enabledByDefault": false,
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "postgresUrl": {
+        "type": "string",
+        "description": "PostgreSQL URL for SecAFS; required only when manageDaemon is true."
+      },
+      "socketPath": {
+        "type": "string",
+        "description": "Override for the Unix socket path of secafs serve api. Default: $XDG_RUNTIME_DIR/secafs/secafs.sock"
+      },
+      "manageDaemon": {
+        "type": "boolean",
+        "default": false,
+        "description": "If true, openclaw spawns and manages secafs serve api as a child process."
+      },
+      "mountRoot": {
+        "type": "string",
+        "description": "Host-side parent directory for per-conversation FUSE mount targets."
+      }
+    }
+  }
+}

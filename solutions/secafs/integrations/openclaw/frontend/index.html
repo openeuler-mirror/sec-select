@@ -1,0 +1,870 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SecAFS Console</title>
+    <style>
+      :root {
+        --bg0:#0a0c14; --bg1:#101524; --panel:rgba(22,27,45,.72); --panel-solid:#161b2d;
+        --line:rgba(120,140,200,.14); --line-strong:rgba(120,140,200,.28);
+        --fg:#e8ebf6; --muted:#8a93ad; --dim:#5d6478;
+        --acc1:#5b8cff; --acc2:#9d6bff; --acc3:#34d2ff;
+        --ok:#3ecf8e; --err:#ff6b7a; --warn:#ffb454;
+        --grad:linear-gradient(135deg,var(--acc1),var(--acc2));
+        --r:14px;
+      }
+      * { box-sizing:border-box; }
+      html,body { height:100%; }
+      body {
+        margin:0; font:13.5px/1.55 "Inter",ui-sans-serif,system-ui,-apple-system,sans-serif;
+        color:var(--fg); overflow:hidden;
+        background:
+          radial-gradient(1200px 600px at 80% -10%, rgba(157,107,255,.16), transparent 60%),
+          radial-gradient(1000px 700px at -10% 110%, rgba(91,140,255,.14), transparent 60%),
+          radial-gradient(800px 500px at 50% 120%, rgba(52,210,255,.07), transparent 60%),
+          linear-gradient(180deg,var(--bg0),var(--bg1));
+        display:flex; flex-direction:column;
+      }
+      ::selection { background:rgba(91,140,255,.35); }
+      ::-webkit-scrollbar { width:10px; height:10px; }
+      ::-webkit-scrollbar-thumb { background:rgba(120,140,200,.18); border-radius:8px; border:3px solid transparent; background-clip:content-box; }
+      ::-webkit-scrollbar-thumb:hover { background:rgba(120,140,200,.32); border:3px solid transparent; background-clip:content-box; }
+      ::-webkit-scrollbar-track { background:transparent; }
+
+      /* ---------- header ---------- */
+      header {
+        display:flex; align-items:center; gap:10px; padding:10px 16px;
+        border-bottom:1px solid var(--line);
+        background:rgba(13,16,28,.6); backdrop-filter:blur(14px);
+        z-index:5;
+      }
+      .logo { display:flex; align-items:center; gap:9px; font-weight:700; font-size:15px; letter-spacing:.02em; }
+      .logo .mark { font-size:20px; filter:drop-shadow(0 0 10px rgba(91,140,255,.5)); }
+      .logo .grad { background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent; }
+      header input {
+        background:rgba(10,13,22,.7); color:var(--fg); border:1px solid var(--line);
+        border-radius:9px; padding:7px 11px; font:inherit; outline:none; transition:border-color .15s, box-shadow .15s;
+      }
+      header input:focus { border-color:var(--acc1); box-shadow:0 0 0 3px rgba(91,140,255,.18); }
+      #url { width:230px; } #token { width:250px; }
+      button {
+        background:var(--grad); color:#fff; border:0; border-radius:9px; padding:7px 14px;
+        font:inherit; font-weight:600; cursor:pointer; transition:filter .15s, transform .06s;
+        box-shadow:0 2px 12px rgba(91,140,255,.25);
+      }
+      button:hover:not(:disabled) { filter:brightness(1.12); }
+      button:active:not(:disabled) { transform:translateY(1px); }
+      button:disabled { opacity:.45; cursor:default; box-shadow:none; }
+      button.ghost { background:rgba(120,140,200,.1); color:var(--fg); box-shadow:none; border:1px solid var(--line); }
+      button.ghost:hover:not(:disabled) { background:rgba(120,140,200,.18); filter:none; }
+      #status { margin-left:auto; display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12.5px; }
+      #status .pip { width:9px; height:9px; border-radius:50%; background:var(--dim); transition:background .3s; }
+      #status.ok .pip { background:var(--ok); box-shadow:0 0 10px rgba(62,207,142,.7); animation:breathe 2.6s ease-in-out infinite; }
+      #status.err .pip { background:var(--err); box-shadow:0 0 10px rgba(255,107,122,.7); }
+      @keyframes breathe { 0%,100%{opacity:1;} 50%{opacity:.55;} }
+
+      /* ---------- layout ---------- */
+      main { flex:1; display:grid; grid-template-columns:264px minmax(0,1fr) 380px; gap:12px; padding:12px; min-height:0; }
+      .panel {
+        background:var(--panel); backdrop-filter:blur(16px);
+        border:1px solid var(--line); border-radius:var(--r);
+        display:flex; flex-direction:column; min-height:0; overflow:hidden;
+        box-shadow:0 8px 32px rgba(0,0,0,.32);
+      }
+      .panel > h2 {
+        margin:0; padding:11px 14px 9px; font-size:10.5px; font-weight:700;
+        letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+        border-bottom:1px solid var(--line); flex:none;
+        display:flex; align-items:center; gap:7px;
+      }
+      .panel > h2 .ico { font-size:13px; }
+
+      /* ---------- sessions (left) ---------- */
+      #left { display:flex; flex-direction:column; gap:12px; min-height:0; }
+      #sessPanel { flex:1; }
+      .newrow { display:flex; gap:7px; padding:11px 12px; border-bottom:1px solid var(--line); flex:none; }
+      .newrow input {
+        flex:1; min-width:0; background:rgba(10,13,22,.7); color:var(--fg);
+        border:1px solid var(--line); border-radius:9px; padding:7px 10px; font:inherit; outline:none;
+        transition:border-color .15s, box-shadow .15s;
+      }
+      .newrow input:focus { border-color:var(--acc1); box-shadow:0 0 0 3px rgba(91,140,255,.18); }
+      #sessionList { flex:1; overflow:auto; padding:6px; }
+      .empty { color:var(--dim); text-align:center; padding:28px 12px; font-size:12.5px; }
+      .sess {
+        display:flex; align-items:center; gap:4px; padding:8px 9px; border-radius:10px;
+        cursor:pointer; transition:background .12s; margin-bottom:2px; border:1px solid transparent;
+      }
+      .sess:hover { background:rgba(120,140,200,.08); }
+      .sess.active { background:rgba(91,140,255,.13); border-color:rgba(91,140,255,.35); }
+      .sess-main { display:flex; align-items:center; gap:8px; min-width:0; flex:1; }
+      .dot { width:8px; height:8px; border-radius:50%; flex:none; border:1.5px solid var(--dim); background:transparent; }
+      .dot.on { background:var(--ok); border-color:var(--ok); box-shadow:0 0 8px rgba(62,207,142,.6); }
+      .sess-meta { min-width:0; }
+      .sess-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; font-size:13px; }
+      .sess-time { color:var(--dim); font-size:10.5px; }
+      .sess-actions { display:flex; gap:1px; flex:none; opacity:0; transition:opacity .15s; }
+      .sess:hover .sess-actions, .sess.active .sess-actions { opacity:1; }
+      button.mini { background:transparent; padding:3px 4px; font-size:12px; line-height:1; box-shadow:none; border-radius:6px; }
+      button.mini:hover { background:rgba(120,140,200,.18); filter:none; }
+      .refreshrow { padding:9px 12px; border-top:1px solid var(--line); flex:none; }
+      .refreshrow button { width:100%; }
+
+      /* ---------- chat (center) ---------- */
+      #chatPanel { min-width:0; }
+      #chatlog { flex:1; overflow:auto; padding:18px 22px 10px; display:flex; flex-direction:column; gap:14px; }
+      .msg { display:flex; gap:10px; max-width:82%; animation:rise .22s ease both; }
+      @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+      .msg .avatar {
+        width:30px; height:30px; border-radius:10px; flex:none; display:flex; align-items:center;
+        justify-content:center; font-size:15px; margin-top:2px;
+      }
+      .msg.agent .avatar { background:rgba(91,140,255,.16); border:1px solid rgba(91,140,255,.3); }
+      .msg.user  .avatar { background:rgba(157,107,255,.16); border:1px solid rgba(157,107,255,.3); }
+      .msg .bubble {
+        padding:9px 13px; border-radius:14px; white-space:pre-wrap; word-break:break-word;
+        font-size:13.5px; line-height:1.6; min-width:0;
+      }
+      .msg.agent .bubble { background:rgba(120,140,200,.1); border:1px solid var(--line); border-top-left-radius:4px; }
+      .msg.user { align-self:flex-end; flex-direction:row-reverse; }
+      .msg.user .bubble {
+        background:linear-gradient(135deg,rgba(91,140,255,.28),rgba(157,107,255,.28));
+        border:1px solid rgba(125,120,255,.35); border-top-right-radius:4px;
+      }
+      .msg.err .bubble { border-color:rgba(255,107,122,.45); background:rgba(255,107,122,.1); color:#ffd6da; }
+      .msg .rbbtn {
+        align-self:center; flex:none; width:26px; height:26px; border-radius:50%;
+        background:rgba(120,140,200,.1); border:1px solid var(--line); color:var(--muted);
+        font-size:12px; padding:0; line-height:1; box-shadow:none;
+        opacity:0; transition:opacity .15s, background .15s;
+      }
+      .msg:hover .rbbtn { opacity:1; }
+      .msg .rbbtn:hover { background:rgba(52,210,255,.16); border-color:rgba(52,210,255,.45); color:var(--acc3); filter:none; }
+      .dots { display:inline-flex; gap:5px; align-items:center; height:1em; }
+      .dots i { width:6px; height:6px; border-radius:50%; background:var(--acc1); animation:hop 1.2s ease-in-out infinite; }
+      .dots i:nth-child(2) { animation-delay:.15s; background:var(--acc2); }
+      .dots i:nth-child(3) { animation-delay:.3s; background:var(--acc3); }
+      @keyframes hop { 0%,60%,100% { transform:translateY(0); opacity:.45; } 30% { transform:translateY(-5px); opacity:1; } }
+      #chatHint { text-align:center; color:var(--dim); padding:40px 20px; font-size:13px; }
+      #chatHint .big { font-size:34px; margin-bottom:10px; filter:drop-shadow(0 0 18px rgba(91,140,255,.45)); }
+      #chatbox { display:flex; gap:9px; padding:12px 14px; border-top:1px solid var(--line); flex:none; background:rgba(10,13,22,.35); }
+      #chatInput {
+        flex:1; background:rgba(10,13,22,.75); color:var(--fg); border:1px solid var(--line-strong);
+        border-radius:11px; padding:10px 14px; font:inherit; outline:none; transition:border-color .15s, box-shadow .15s;
+      }
+      #chatInput:focus { border-color:var(--acc1); box-shadow:0 0 0 3px rgba(91,140,255,.16); }
+      #send { padding:10px 20px; border-radius:11px; }
+
+      /* ---------- files + editor (right) ---------- */
+      #right { display:flex; flex-direction:column; gap:12px; min-height:0; }
+      #filesPanel { flex:4; min-height:0; }
+      #tree { flex:1; overflow:auto; padding:7px; }
+      .node {
+        padding:4px 10px; cursor:pointer; white-space:nowrap; border-radius:8px;
+        font-size:12.8px; transition:background .1s; overflow:hidden; text-overflow:ellipsis;
+      }
+      .node:hover { background:rgba(120,140,200,.1); }
+      .node.dir { color:var(--muted); cursor:default; }
+      .node.file.sel { background:rgba(91,140,255,.14); color:#cfe0ff; }
+      #editorPanel { flex:6; min-height:0; }
+      #filePath { padding:8px 14px; color:var(--muted); border-bottom:1px solid var(--line); font-size:12px; flex:none;
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,Menlo,monospace; }
+      #content {
+        flex:1; width:100%; border:0; background:transparent; color:var(--fg); padding:12px 14px;
+        font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; resize:none; outline:none; min-height:0;
+      }
+      .editorbar { padding:9px 12px; border-top:1px solid var(--line); flex:none; display:flex; justify-content:flex-end; }
+
+      /* ---------- rollback ---------- */
+      .hdr-actions { margin-left:auto; display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; }
+      .pillbtn {
+        background:rgba(120,140,200,.1); border:1px solid var(--line); color:var(--muted);
+        border-radius:999px; padding:3px 11px; font-size:11.5px; font-weight:600; box-shadow:none;
+      }
+      .pillbtn:hover:not(:disabled) { background:rgba(120,140,200,.18); filter:none; color:var(--fg); }
+      .pillbtn.on { background:rgba(62,207,142,.14); border-color:rgba(62,207,142,.4); color:var(--ok); }
+      #snapPanel {
+        position:absolute; top:42px; right:10px; width:300px; max-height:55%; z-index:20;
+        background:rgba(18,23,40,.96); backdrop-filter:blur(16px);
+        border:1px solid var(--line-strong); border-radius:12px;
+        box-shadow:0 16px 48px rgba(0,0,0,.5); display:none; flex-direction:column; overflow:hidden;
+        animation:rise .18s ease both;
+      }
+      #snapPanel.open { display:flex; }
+      #snapPanel .sp-h { padding:10px 13px; font-size:11px; font-weight:700; letter-spacing:.1em;
+        text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--line); }
+      #snapList { overflow:auto; padding:6px; }
+      .snap { display:flex; align-items:center; gap:9px; padding:8px 9px; border-radius:9px; }
+      .snap:hover { background:rgba(120,140,200,.08); }
+      .snap .tl { width:10px; display:flex; flex-direction:column; align-items:center; align-self:stretch; }
+      .snap .tl i { width:8px; height:8px; border-radius:50%; background:var(--acc3); box-shadow:0 0 8px rgba(52,210,255,.5); flex:none; margin-top:5px; }
+      .snap .tl::after { content:""; flex:1; width:1.5px; background:rgba(120,140,200,.2); margin-top:3px; }
+      .snap:last-child .tl::after { display:none; }
+      .snap-meta { flex:1; min-width:0; }
+      .snap-time { font-size:12.5px; font-weight:600; }
+      .snap-id { font-size:10.5px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .snap button { padding:4px 10px; font-size:11.5px; border-radius:7px; flex:none; }
+
+      /* ---------- toasts ---------- */
+      #toasts { position:fixed; right:18px; bottom:18px; display:flex; flex-direction:column; gap:9px; z-index:50; max-width:380px; }
+      .toast {
+        background:rgba(20,25,42,.92); backdrop-filter:blur(12px); border:1px solid var(--line-strong);
+        border-left:3px solid var(--acc1); border-radius:11px; padding:10px 14px; font-size:12.5px;
+        box-shadow:0 10px 30px rgba(0,0,0,.45); animation:slidein .2s ease both; word-break:break-word;
+      }
+      .toast.err { border-left-color:var(--err); }
+      .toast.ok { border-left-color:var(--ok); }
+      .toast.warn { border-left-color:var(--warn); }
+      .toast .t { font-weight:700; margin-bottom:2px; }
+      .toast .b { color:var(--muted); }
+      @keyframes slidein { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:none; } }
+      .toast.bye { transition:opacity .3s, transform .3s; opacity:0; transform:translateX(20px); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="logo"><span class="mark">🦞</span><span>SecAFS <span class="grad">Console</span></span></div>
+      <input id="url" value="ws://127.0.0.1:8090" placeholder="bridge/gateway ws url" />
+      <input id="token" placeholder="gateway token (if required)" />
+      <button id="connect">Connect</button>
+      <span id="status"><span class="pip"></span><span id="statusText">disconnected</span></span>
+    </header>
+
+    <main>
+      <!-- left: sessions -->
+      <div id="left">
+        <div class="panel" id="sessPanel">
+          <h2><span class="ico">🗂️</span>Sessions</h2>
+          <div class="newrow">
+            <input id="newAlias" placeholder="alias (optional)" disabled />
+            <button id="newSession" disabled>＋ New</button>
+          </div>
+          <div id="sessionList"><div class="empty">connect to load sessions</div></div>
+          <div class="refreshrow" style="display:flex; gap:7px;">
+            <button id="refreshSessions" class="ghost" disabled style="flex:1;">↻ Refresh</button>
+            <button id="importSession" class="ghost" disabled style="flex:1;" title="import a session exported as .tar.gz — always creates a new copy">⬆ Import</button>
+            <input id="importFile" type="file" accept=".tar.gz,.tgz,application/gzip" style="display:none" />
+          </div>
+        </div>
+      </div>
+
+      <!-- center: chat -->
+      <div class="panel" id="chatPanel" style="position:relative;">
+        <h2><span class="ico">💬</span>Chat<span id="chatTitle" style="text-transform:none;letter-spacing:0;color:var(--fg);font-weight:600;"></span>
+          <span class="hdr-actions">
+            <button class="pillbtn" id="rbToggle" disabled title="snapshot the workspace + chat after each turn so you can roll back">⏪ rollback: off</button>
+            <button class="pillbtn" id="rbHistory" disabled title="restore points">🕘</button>
+          </span>
+        </h2>
+        <div id="snapPanel">
+          <div class="sp-h">Restore points</div>
+          <div id="snapList"><div class="empty">no snapshots yet</div></div>
+        </div>
+        <div id="chatlog">
+          <div id="chatHint"><div class="big">🦞</div>connect, then create or pick a session to start chatting</div>
+        </div>
+        <div id="chatbox">
+          <input id="chatInput" placeholder="message the agent…" disabled />
+          <button id="send" disabled>Send ⏎</button>
+        </div>
+      </div>
+
+      <!-- right: files + editor -->
+      <div id="right">
+        <div class="panel" id="filesPanel">
+          <h2><span class="ico">📁</span>Files</h2>
+          <div id="tree"><div class="empty">no session</div></div>
+        </div>
+        <div class="panel" id="editorPanel">
+          <h2><span class="ico">✏️</span>Editor</h2>
+          <div id="filePath">— select a file —</div>
+          <textarea id="content" placeholder="file contents" disabled></textarea>
+          <div class="editorbar"><button id="save" disabled>Save to SecAFS</button></div>
+        </div>
+      </div>
+    </main>
+
+    <div id="toasts"></div>
+
+    <script type="module">
+      // ---- Gateway client (OpenClaw wire protocol v3/v4, operator role) ----
+      const MIN_PROTO = 3, MAX_PROTO = 4;
+      class Gateway {
+        constructor() { this.ws = null; this.id = 0; this.pending = new Map(); }
+        connect(url, token) {
+          return new Promise((resolve, reject) => {
+            const ws = new WebSocket(url);
+            this.ws = ws;
+            ws.onmessage = (e) => this._onFrame(e.data);
+            ws.onerror = () => reject(new Error("websocket error"));
+            ws.onclose = () => { setStatus("disconnected", ""); };
+            ws.onopen = async () => {
+              try {
+                // client.id and client.mode must be valid protocol enums
+                // (GATEWAY_CLIENT_IDS / GATEWAY_CLIENT_MODES) — arbitrary
+                // strings are rejected with INVALID_REQUEST. role:"operator"
+                // is the auth role (separate from client.mode).
+                const hello = await this._req("connect", {
+                  minProtocol: MIN_PROTO, maxProtocol: MAX_PROTO,
+                  client: { id: "gateway-client", version: "0.1.0", platform: "web", mode: "ui" },
+                  role: "operator",
+                  scopes: ["operator.read", "operator.write"],
+                  caps: [], commands: [], permissions: {},
+                  // Token auth connects on loopback, but a token-only operator
+                  // gets scopes CLEARED → read-only. WRITE methods need a
+                  // paired DEVICE IDENTITY — the local bridge holds one, so
+                  // pointing at the bridge (default) gets read+write.
+                  auth: token ? { token } : {},
+                });
+                resolve(hello);
+              } catch (err) { reject(err); }
+            };
+          });
+        }
+        _onFrame(data) {
+          let f; try { f = JSON.parse(data); } catch { return; }
+          if (f.type !== "res") return;
+          const p = this.pending.get(f.id);
+          if (!p) return;
+          this.pending.delete(f.id);
+          f.ok ? p.resolve(f.payload) : p.reject(new Error(f.error?.message || JSON.stringify(f.error) || "rpc error"));
+        }
+        _req(method, params) {
+          const id = String(++this.id);
+          const frame = { type: "req", id, method, params };
+          // Agent turns can legitimately run for minutes (tool use, file
+          // writes); everything else should answer fast.
+          const timeoutMs = method === "agent" ? 600000 : 120000;
+          return new Promise((resolve, reject) => {
+            this.pending.set(id, { resolve, reject });
+            this.ws.send(JSON.stringify(frame));
+            setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`timeout: ${method} (server may still be running; reopen the session to see the reply)`)); }, timeoutMs);
+          });
+        }
+        call(method, params) { return this._req(method, params || {}); }
+      }
+
+      // ---- UI helpers ----
+      const $ = (id) => document.getElementById(id);
+      const gw = new Gateway();
+      let sessionKey = null;   // active session (bare form, e.g. "main:<uuid>")
+      let sessions = [];       // last secafs.session.list result
+
+      function setStatus(text, cls) {
+        $("statusText").textContent = text;
+        $("status").className = cls || "";
+      }
+      function toast(title, body, cls = "", ms = 4500) {
+        const d = document.createElement("div");
+        d.className = "toast " + cls;
+        d.innerHTML = `<div class="t"></div>` + (body ? `<div class="b"></div>` : "");
+        d.querySelector(".t").textContent = title;
+        if (body) d.querySelector(".b").textContent = body;
+        $("toasts").appendChild(d);
+        setTimeout(() => { d.classList.add("bye"); setTimeout(() => d.remove(), 350); }, ms);
+      }
+
+      // ---- connect ----
+      $("connect").onclick = async () => {
+        try {
+          setStatus("connecting…", "");
+          const hello = await gw.connect($("url").value.trim(), $("token").value.trim());
+          const scopes = hello.auth?.scopes || [];
+          const canWrite = scopes.includes("operator.write") || scopes.includes("operator.admin");
+          setStatus(canWrite ? "connected · read+write" : "connected · READ-ONLY", canWrite ? "ok" : "err");
+          if (!canWrite) toast("Read-only connection", "This credential lacks operator.write — creating sessions, saving files, and chat will fail.", "warn", 8000);
+          for (const b of ["newSession", "newAlias", "refreshSessions", "importSession", "chatInput", "send"]) $(b).disabled = false;
+          await refreshSessions();
+        } catch (e) { setStatus("connect failed: " + e.message, "err"); }
+      };
+
+      // ---- session list ----
+      $("refreshSessions").onclick = () => { refreshSessions(); refreshTree(); };
+      async function refreshSessions() {
+        try {
+          const r = await gw.call("secafs.session.list");
+          sessions = r.sessions || [];
+          renderSessions();
+          if (!r.daemonReachable) toast("Daemon unreachable", "mount states shown as unmounted", "warn");
+        } catch (e) { toast("session.list failed", e.message, "err"); }
+      }
+      function displayName(s) { return s.alias || s.sid.slice(0, 8); }
+      function renderSessions() {
+        const el = $("sessionList"); el.innerHTML = "";
+        if (!sessions.length) {
+          el.innerHTML = '<div class="empty">no sessions yet —<br/>create one above ✨</div>';
+          return;
+        }
+        for (const s of sessions) {
+          const row = document.createElement("div");
+          row.className = "sess" + (sessionKey === s.sessionKey ? " active" : "");
+          const when = s.lastInteractionAt || s.updatedAt;
+          row.innerHTML = `
+            <div class="sess-main">
+              <span class="dot ${s.mounted ? "on" : ""}" title="${s.mounted ? "mounted" : "saved in DB (not mounted)"}"></span>
+              <div class="sess-meta">
+                <div class="sess-name"></div>
+                <div class="sess-time">${when ? new Date(when).toLocaleString() : ""}</div>
+              </div>
+            </div>
+            <div class="sess-actions">
+              <button class="mini" data-act="rename" title="rename (alias)">✏️</button>
+              <button class="mini" data-act="export" title="export session as .tar.gz (files + chat)">⬇</button>
+              <button class="mini" data-act="close" title="unmount — data stays in DB" ${s.mounted ? "" : "disabled"}>⏏</button>
+              <button class="mini" data-act="destroy" title="destroy — permanently deletes data">🗑</button>
+            </div>`;
+          row.querySelector(".sess-name").textContent = displayName(s);
+          row.querySelector(".sess-name").title = s.sid;
+          row.onclick = (ev) => { if (ev.target.closest("button")) return; selectSession(s); };
+          row.querySelector('[data-act="rename"]').onclick = () => renameSession(s);
+          row.querySelector('[data-act="export"]').onclick = () => exportSession(s);
+          row.querySelector('[data-act="close"]').onclick = () => closeSession(s);
+          row.querySelector('[data-act="destroy"]').onclick = () => destroySession(s);
+          el.appendChild(row);
+        }
+      }
+
+      function clearActive() {
+        sessionKey = null;
+        $("chatTitle").textContent = "";
+        $("tree").innerHTML = '<div class="empty">no session</div>';
+        clearEditor();
+        setRollbackUI(null);
+      }
+      function clearEditor() {
+        currentPath = null;
+        $("filePath").textContent = "— select a file —";
+        $("content").value = ""; $("content").disabled = true; $("save").disabled = true;
+      }
+      function setActiveSession(s) {
+        sessionKey = s.sessionKey;
+        $("chatTitle").textContent = " · " + displayName(s);
+        $("chatlog").innerHTML = "";
+        clearEditor();
+        setRollbackUI(null);
+      }
+
+      // ---- rollback ----
+      // Snapshots are committed lazily: when the NEXT turn starts, the plugin
+      // snapshots the workspace labeled with the previous turn's last
+      // assistant message. Restore = filesystem back to that snapshot AND the
+      // server-side chat history truncated to that message.
+      let rollback = { enabled: false, snapshots: [] };
+      function setRollbackUI(state) {
+        rollback = state ?? { enabled: false, snapshots: [] };
+        const t = $("rbToggle"), h = $("rbHistory");
+        const active = Boolean(sessionKey);
+        t.disabled = !active; h.disabled = !active || !rollback.snapshots.length;
+        t.textContent = `⏪ rollback: ${rollback.enabled ? "on" : "off"}`;
+        t.classList.toggle("on", rollback.enabled);
+        h.textContent = rollback.snapshots.length ? `🕘 ${rollback.snapshots.length}` : "🕘";
+        if (!active || !rollback.snapshots.length) $("snapPanel").classList.remove("open");
+        renderSnapshots();
+      }
+      async function refreshRollback() {
+        if (!sessionKey) { setRollbackUI(null); return; }
+        try {
+          const r = await gw.call("secafs.rollback.list", { sessionKey });
+          // newest first for the timeline
+          r.snapshots = (r.snapshots || []).slice().sort((a, b) => b.snapId - a.snapId);
+          setRollbackUI(r);
+        } catch (e) { toast("rollback.list failed", e.message, "err"); }
+      }
+      function renderSnapshots() {
+        const el = $("snapList"); el.innerHTML = "";
+        if (!rollback.snapshots.length) {
+          el.innerHTML = '<div class="empty">no restore points yet —<br/>they appear one turn after each reply</div>';
+          return;
+        }
+        for (const s of rollback.snapshots) {
+          const row = document.createElement("div");
+          row.className = "snap";
+          row.innerHTML = `
+            <div class="tl"><i></i></div>
+            <div class="snap-meta">
+              <div class="snap-time">${new Date(s.committedAt).toLocaleString()}</div>
+              <div class="snap-id">#${s.snapId} · ${s.messageId || ""}</div>
+            </div>
+            <button data-act="restore">⏪ restore</button>`;
+          row.querySelector('[data-act="restore"]').onclick = () => restoreSnap(s);
+          el.appendChild(row);
+        }
+      }
+      $("rbToggle").onclick = async () => {
+        if (!sessionKey) return;
+        const next = !rollback.enabled;
+        if (!next && rollback.snapshots.length &&
+            !confirm(`Turn rollback off?\nThis purges all ${rollback.snapshots.length} restore point(s) for this session.`)) return;
+        try {
+          await gw.call("secafs.rollback.setEnabled", { sessionKey, enabled: next });
+          toast(next ? "rollback enabled" : "rollback disabled",
+                next ? "a restore point is captured at the start of each following turn" : "restore points purged",
+                next ? "ok" : "warn");
+          await refreshRollback();
+        } catch (e) { toast("setEnabled failed", e.message, "err"); }
+      };
+      $("rbHistory").onclick = (ev) => { ev.stopPropagation(); $("snapPanel").classList.toggle("open"); };
+      document.addEventListener("click", (ev) => {
+        if (!ev.target.closest("#snapPanel") && !ev.target.closest("#rbHistory")) $("snapPanel").classList.remove("open");
+      });
+      async function restoreTo(snapId, whenText) {
+        if (!confirm(`Roll back to ${whenText}?\nWorkspace files AND chat history after that point are permanently discarded.`)) return;
+        $("snapPanel").classList.remove("open");
+        const pending = addThinking();
+        try {
+          const r = await gw.call("secafs.rollback.restore", { sessionKey, snapId });
+          pending.remove();
+          toast("rollback complete", `restored to snapshot #${snapId}`, "ok");
+          await refreshTree();
+          await refreshSessions();
+          await refreshRollback();
+          // server history is now truncated to the restore point — re-render
+          // it so the conversation up to that message stays visible
+          await loadHistory();
+          addMsg("agent", `⏪ rolled back to ${whenText} (${r.prunedSnapshots} later restore point(s) pruned). The conversation continues from here.`);
+        } catch (e) {
+          pending.remove();
+          toast("restore failed", e.message, "err", 8000);
+        }
+      }
+      const restoreSnap = (s) => restoreTo(s.snapId, new Date(s.committedAt).toLocaleString());
+      function attachRollbackBtn(msgEl, snapId) {
+        const b = document.createElement("button");
+        b.className = "rbbtn";
+        b.title = "roll back to right after this reply (workspace + chat)";
+        b.textContent = "⏪";
+        b.onclick = () => restoreTo(snapId, "right after this reply");
+        msgEl.appendChild(b);
+      }
+
+      async function selectSession(s) {
+        if (sessionKey === s.sessionKey) return;
+        try {
+          // open mounts the volume if needed (e.g. after a daemon restart)
+          // and re-points the agent workspace at it.
+          await gw.call("secafs.session.open", { sessionKey: s.sessionKey });
+          setActiveSession(s);
+          await refreshSessions();
+          await refreshTree();
+          await refreshRollback();
+          await loadHistory();
+          if (!$("chatlog").children.length) {
+            addMsg("agent", `session "${displayName(s)}" opened — files are mounted, ask me anything.`);
+          }
+        } catch (e) { toast("open failed", e.message, "err"); }
+      }
+
+      // Re-render the server-side conversation (used on session open and
+      // after a rollback, when the server history is the source of truth).
+      // Assistant messages whose id matches a snapshot label get their ⏪
+      // button back, so per-message rollback survives reload/reopen.
+      function extractText(m) {
+        if (typeof m.content === "string") return m.content;
+        return (m.content || []).filter((c) => c.type === "text").map((c) => c.text).filter(Boolean).join("\n");
+      }
+      async function loadHistory() {
+        if (!sessionKey) return;
+        try {
+          const h = await gw.call("chat.history", { sessionKey, limit: 200 });
+          const log = $("chatlog"); log.innerHTML = "";
+          const snapByMsg = new Map(rollback.snapshots.map((s) => [s.messageId, s.snapId]));
+          for (const m of h.messages || []) {
+            if (m.role !== "user" && m.role !== "assistant") continue;
+            const text = extractText(m);
+            if (!text) continue;
+            const el = addMsg(m.role === "user" ? "user" : "agent", text);
+            const mid = m.__openclaw?.id;
+            if (m.role === "assistant" && mid && snapByMsg.has(mid)) {
+              attachRollbackBtn(el, snapByMsg.get(mid));
+            }
+          }
+          log.scrollTop = log.scrollHeight;
+        } catch (e) { toast("history load failed", e.message, "warn"); }
+      }
+
+      $("newSession").onclick = async () => {
+        try {
+          const alias = $("newAlias").value.trim();
+          const r = await gw.call("secafs.session.create", alias ? { alias } : {});
+          $("newAlias").value = "";
+          setActiveSession({ sessionKey: r.sessionKey, alias: r.alias, sid: r.sessionKey.split(":").pop() });
+          addMsg("agent", `new session "${r.alias || r.sessionKey.split(":").pop().slice(0, 8)}" ready ✨`);
+          // rollback snapshots are opt-in per session; turn them on for new
+          // sessions so restore points accumulate from the first turn
+          try { await gw.call("secafs.rollback.setEnabled", { sessionKey: r.sessionKey, enabled: true }); }
+          catch (e) { toast("rollback auto-enable failed", e.message, "warn"); }
+          await refreshSessions();
+          await refreshTree();
+          await refreshRollback();
+        } catch (e) { toast("create failed", e.message, "err"); }
+      };
+
+      async function renameSession(s) {
+        const alias = prompt(`Alias for ${s.sid.slice(0, 8)}… (empty to clear):`, s.alias || "");
+        if (alias === null) return;
+        try {
+          await gw.call("secafs.session.rename", { sessionKey: s.sessionKey, alias });
+          if (sessionKey === s.sessionKey) $("chatTitle").textContent = " · " + (alias.trim() || s.sid.slice(0, 8));
+          await refreshSessions();
+        } catch (e) { toast("rename failed", e.message, "err"); }
+      }
+
+      async function closeSession(s) {
+        try {
+          await gw.call("secafs.session.close", { sessionKey: s.sessionKey });
+          if (sessionKey === s.sessionKey) clearActive();
+          toast("session closed", `"${displayName(s)}" unmounted — data stays in the database`, "ok");
+          await refreshSessions();
+        } catch (e) { toast("close failed", e.message, "err"); }
+      }
+
+      async function destroySession(s) {
+        if (!confirm(`Destroy "${displayName(s)}"?\nPermanently deletes its files, chat record and transcripts. (⏏ close just unmounts and keeps data.)`)) return;
+        try {
+          await gw.call("secafs.session.destroy", { sessionKey: s.sessionKey });
+          if (sessionKey === s.sessionKey) clearActive();
+          toast("session destroyed", displayName(s), "ok");
+          await refreshSessions();
+        } catch (e) { toast("destroy failed", e.message, "err"); }
+      }
+
+      // ---- session export / import (.tar.gz, built client-side) ----
+      function b64ToU8(b64) {
+        const bin = atob(b64); const u8 = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+        return u8;
+      }
+      function u8ToB64(u8) {
+        let s = ""; const CH = 0x8000;
+        for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+        return btoa(s);
+      }
+      function tarHeader(name, size) {
+        const h = new Uint8Array(512); const enc = new TextEncoder();
+        const put = (str, off, len) => {
+          const b = enc.encode(str);
+          if (b.length > len) throw new Error("tar field overflow: " + str);
+          h.set(b, off);
+        };
+        let prefix = "";
+        if (enc.encode(name).length > 100) {
+          // ustar prefix split for long paths (prefix[155] "/" name[100])
+          const idx = name.lastIndexOf("/", 154);
+          if (idx <= 0) throw new Error("path too long for tar: " + name);
+          prefix = name.slice(0, idx); name = name.slice(idx + 1);
+          if (enc.encode(name).length > 100 || enc.encode(prefix).length > 155) throw new Error("path too long for tar: " + name);
+        }
+        put(name, 0, 100);
+        put("0000644\0", 100, 8); put("0001750\0", 108, 8); put("0001750\0", 116, 8);
+        put(size.toString(8).padStart(11, "0") + "\0", 124, 12);
+        put(Math.floor(Date.now() / 1000).toString(8).padStart(11, "0") + "\0", 136, 12);
+        h.fill(0x20, 148, 156); // checksum field counts as spaces
+        h[156] = 0x30; // '0' = regular file
+        put("ustar\0", 257, 6); put("00", 263, 2);
+        if (prefix) put(prefix, 345, 155);
+        let sum = 0; for (let i = 0; i < 512; i++) sum += h[i];
+        put(sum.toString(8).padStart(6, "0") + "\0 ", 148, 8);
+        return h;
+      }
+      async function buildTarGz(entries) { // entries: [name, Uint8Array][]
+        const parts = [];
+        for (const [name, data] of entries) {
+          parts.push(tarHeader(name, data.length), data);
+          const pad = (512 - (data.length % 512)) % 512;
+          if (pad) parts.push(new Uint8Array(pad));
+        }
+        parts.push(new Uint8Array(1024)); // end-of-archive
+        const blob = new Blob(parts);
+        return await new Response(blob.stream().pipeThrough(new CompressionStream("gzip"))).blob();
+      }
+      async function parseTarGz(file) { // → Map<name, Uint8Array>
+        const buf = new Uint8Array(
+          await new Response(file.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer(),
+        );
+        const dec = new TextDecoder(); const out = new Map(); let off = 0;
+        while (off + 512 <= buf.length) {
+          const block = buf.subarray(off, off + 512);
+          if (block.every((b) => b === 0)) break;
+          const name = dec.decode(block.subarray(0, 100)).replace(/\0.*$/, "");
+          const prefix = dec.decode(block.subarray(345, 500)).replace(/\0.*$/, "");
+          const size = parseInt(dec.decode(block.subarray(124, 136)).replace(/\0.*$/, "").trim(), 8) || 0;
+          const type = block[156];
+          off += 512;
+          const data = buf.slice(off, off + size);
+          off += Math.ceil(size / 512) * 512;
+          if (type === 0x30 || type === 0) out.set(prefix ? `${prefix}/${name}` : name, data);
+        }
+        return out;
+      }
+
+      async function exportSession(s) {
+        try {
+          toast("exporting…", displayName(s), "", 2000);
+          const a = await gw.call("secafs.session.export", { sessionKey: s.sessionKey });
+          const entries = [
+            ["manifest.json", new TextEncoder().encode(JSON.stringify(a.manifest, null, 2))],
+          ];
+          for (const f of a.files) entries.push([`workspace/${f.path}`, b64ToU8(f.content)]);
+          if (a.chat?.sessionJsonl) entries.push(["chat/session.jsonl", b64ToU8(a.chat.sessionJsonl)]);
+          if (a.chat?.trajectoryJsonl) entries.push(["chat/trajectory.jsonl", b64ToU8(a.chat.trajectoryJsonl)]);
+          const blob = await buildTarGz(entries);
+          const fname = `secafs-session-${(s.alias || s.sid.slice(0, 8)).replace(/[^\w.-]+/g, "_")}-${new Date().toISOString().slice(0, 10)}.tar.gz`;
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url; link.download = fname; link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 30000);
+          toast("exported", `${fname} · ${a.manifest.fileCount} files`, "ok");
+        } catch (e) { toast("export failed", e.message, "err", 8000); }
+      }
+
+      $("importSession").onclick = () => $("importFile").click();
+      $("importFile").onchange = async (ev) => {
+        const file = ev.target.files?.[0];
+        ev.target.value = "";
+        if (!file) return;
+        try {
+          const entries = await parseTarGz(file);
+          const manifestU8 = entries.get("manifest.json");
+          if (!manifestU8) throw new Error("manifest.json missing — not a SecAFS session archive");
+          const manifest = JSON.parse(new TextDecoder().decode(manifestU8));
+          const files = []; const chat = {};
+          for (const [name, data] of entries) {
+            if (name.startsWith("workspace/")) files.push({ path: name.slice("workspace/".length), content: u8ToB64(data) });
+            else if (name === "chat/session.jsonl") chat.sessionJsonl = u8ToB64(data);
+            else if (name === "chat/trajectory.jsonl") chat.trajectoryJsonl = u8ToB64(data);
+          }
+          const alias = prompt("Alias for the imported session (always created as a new copy):", manifest.alias || "");
+          if (alias === null) return;
+          const r = await gw.call("secafs.session.import", {
+            archive: { manifest, files, chat },
+            ...(alias.trim() ? { alias: alias.trim() } : {}),
+          });
+          toast("imported", `${r.filesWritten} files → ${r.alias || r.sessionKey}`, "ok");
+          await refreshSessions();
+          await selectSession({ sessionKey: r.sessionKey, alias: r.alias, sid: r.sessionKey.split(":").pop() });
+        } catch (e) { toast("import failed", e.message, "err", 9000); }
+      };
+
+      // ---- file tree / editor ----
+      async function refreshTree() {
+        if (!sessionKey) return;
+        const tree = $("tree"); tree.innerHTML = "";
+        try {
+          const r = await gw.call("secafs.tree", { sessionKey, maxDepth: 6, maxEntries: 1000 });
+          if (!(r.entries || []).length) { tree.innerHTML = '<div class="empty">empty workspace</div>'; return; }
+          renderTree(r.entries, tree, "");
+        } catch (e) { toast("tree failed", e.message, "err"); }
+      }
+      function renderTree(entries, parent, prefix) {
+        for (const e of entries) {
+          const rel = prefix ? `${prefix}/${e.name}` : e.name;
+          const div = document.createElement("div");
+          div.className = "node " + (e.children ? "dir" : "file");
+          div.textContent = (prefix ? "  ".repeat(prefix.split("/").length) : "") + (e.children ? "📁 " : "📄 ") + e.name;
+          div.dataset.rel = rel;
+          parent.appendChild(div);
+          if (e.children) { renderTree(e.children, parent, rel); }
+          else { div.onclick = () => openFile(rel, div); }
+        }
+      }
+
+      let currentPath = null;
+      async function openFile(rel, node) {
+        try {
+          const r = await gw.call("secafs.fs.read", { sessionKey, path: rel, encoding: "utf8", maxBytes: 1048576 });
+          currentPath = rel;
+          for (const n of document.querySelectorAll(".node.sel")) n.classList.remove("sel");
+          node?.classList.add("sel");
+          $("filePath").textContent = `${rel}  ·  ${r.size} bytes`;
+          $("content").value = r.content; $("content").disabled = false; $("save").disabled = false;
+        } catch (e) { toast("read failed", e.message, "err"); }
+      }
+
+      $("save").onclick = async () => {
+        if (!currentPath) return;
+        try {
+          const r = await gw.call("secafs.fs.write", { sessionKey, path: currentPath, content: $("content").value, encoding: "utf8" });
+          toast("saved", `${currentPath} (${r.bytesWritten} bytes)`, "ok", 2500);
+          await refreshTree();
+        } catch (e) { toast("write failed", e.message, "err"); }
+      };
+
+      // ---- chat ----
+      function addMsg(role, text, extraCls = "") {
+        $("chatHint")?.remove();
+        const log = $("chatlog");
+        const d = document.createElement("div");
+        d.className = `msg ${role} ${extraCls}`;
+        d.innerHTML = `<div class="avatar">${role === "user" ? "🧑" : "🦞"}</div><div class="bubble"></div>`;
+        d.querySelector(".bubble").textContent = text;
+        log.appendChild(d);
+        log.scrollTop = log.scrollHeight;
+        return d;
+      }
+      function addThinking() {
+        $("chatHint")?.remove();
+        const log = $("chatlog");
+        const d = document.createElement("div");
+        d.className = "msg agent";
+        d.innerHTML = `<div class="avatar">🦞</div><div class="bubble"><span class="dots"><i></i><i></i><i></i></span></div>`;
+        log.appendChild(d);
+        log.scrollTop = log.scrollHeight;
+        return d;
+      }
+
+      async function sendChat() {
+        const input = $("chatInput"); const text = input.value.trim();
+        if (!text) return;
+        if (!sessionKey) { toast("no session", "create or select a SecAFS session first", "warn"); return; }
+        input.value = "";
+        addMsg("user", text);
+        const pending = addThinking();
+        $("send").disabled = true; input.disabled = true;
+        try {
+          // 'agent' runs one turn for the session (same method `openclaw agent` uses).
+          let r;
+          try {
+            r = await gw.call("agent", { sessionKey, message: text });
+          } catch (e) {
+            // The volume can be unmounted out-of-band (daemon respawn,
+            // session_end) and upstream's attestation check then aborts the
+            // run before the plugin's auto-mount hook runs. Remount via
+            // session.open and retry once.
+            if (!String(e.message).includes("WorkspaceVanishedError")) throw e;
+            pending.querySelector(".bubble").innerHTML = `<span class="dots"><i></i><i></i><i></i></span>`;
+            await gw.call("secafs.session.open", { sessionKey });
+            toast("workspace remounted", "volume was unmounted — reopened it and retrying", "warn");
+            r = await gw.call("agent", { sessionKey, message: text });
+          }
+          // The agent method returns the full run report; the user-visible
+          // reply lives in result.payloads[].text.
+          const reply =
+            (r?.result?.payloads || []).map((p) => p?.text).filter(Boolean).join("\n\n") ||
+            r?.summary || "(empty reply)";
+          pending.querySelector(".bubble").textContent = reply;
+          $("chatlog").scrollTop = $("chatlog").scrollHeight;
+          // Eagerly snapshot this turn so the reply gets its rollback button
+          // immediately (the lazy hook would only commit at the next turn).
+          try {
+            const snap = await gw.call("secafs.rollback.snapshot", { sessionKey });
+            if (snap?.snapId != null) attachRollbackBtn(pending, snap.snapId);
+          } catch { /* best-effort: no button if snapshotting is unavailable */ }
+          await refreshTree();
+          await refreshSessions();
+          await refreshRollback();
+        } catch (e) {
+          pending.classList.add("err");
+          pending.querySelector(".bubble").textContent = "⚠ " + e.message;
+          // a failed turn may still have executed tool calls — reflect any
+          // file changes instead of leaving a stale tree
+          await refreshTree().catch(() => {});
+        } finally {
+          $("send").disabled = false; input.disabled = false; input.focus();
+        }
+      }
+      $("send").onclick = sendChat;
+      $("chatInput").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); });
+    </script>
+  </body>
+</html>
