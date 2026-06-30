@@ -1,0 +1,127 @@
+MigVM AArch64 is dual-licensed. Each source file declares its applicable
+license in its header. The full texts of both licenses are reproduced below.
+
+================================================================================
+License 1: BSD 2-Clause "Simplified" + Patent License (BSD-2-Clause-Patent)
+Applies to files retaining the original Intel copyright:
+  src/acpi.rs, src/mm/layout.rs, src/mm/heap.rs
+================================================================================
+
+Copyright (c) 2022-2025 Intel Corporation
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+Subject to the terms and conditions of the foregoing license, each copyright
+holder hereby grants to any recipient of the Work a perpetual, worldwide,
+non-exclusive, no-charge, royalty-free, irrevocable (except as stated in this
+section) patent license to make, have made, use, offer to sell, sell, import,
+and otherwise transfer the Work, where such license applies only to those
+patent claims licensable by such copyright holder that are necessarily
+infringed by the Work alone or by combination of the Work with other software
+or hardware.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+================================================================================
+License 2: Mulan Permissive Software License, Version 2 (Mulan PSL v2)
+Applies to all other source files carrying the Huawei Technologies copyright.
+================================================================================
+
+Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+Your reproduction, use, modification and distribution of the software otherwise
+complying with the terms and conditions of the Mulan PSL v2.
+
+1. Definition:
+
+   "Software" refers to the MigVM AArch64 project and its derivative works.
+
+   "You" refers to any individual or legal entity that has obtained a copy of
+   this Software and exercises the rights granted by this License.
+
+   "Contribution" refers to any software, source code, documentation or other
+   works of authorship, including modifications and additions to existing
+   works, that are intentionally submitted by You to the Licensor for
+   inclusion in the Software.
+
+2. Grant of Copyright License:
+
+   Subject to the terms and conditions of this License, each copyright holder
+   hereby grants to You a perpetual, worldwide, non-exclusive, no-charge,
+   royalty-free, irrevocable copyright license to reproduce, use, modify,
+   distribute or prepare derivative works of the Software, and to permit
+   third parties to do so, where the license applies to the copyright
+   holder's copyright in the Software.
+
+3. Grant of Patent License:
+
+   Subject to the terms and conditions of this License, each copyright holder
+   hereby grants to You a perpetual, worldwide, non-exclusive, no-charge,
+   royalty-free, irrevocable (except as stated in this section) patent
+   license to make, have made, use, offer to sell, sell, import, and
+   otherwise transfer the Software, where the license applies to those
+   patent claims licensable by the copyright holder that are necessarily
+   infringed by the Software alone or by combination of the Software with
+   other software or hardware.
+
+   If You or your agent institute patent litigation against any copyright
+   holder (including a cross-claim or counterclaim in a lawsuit) alleging
+   that the Software or a Contribution incorporated within the Software
+   constitutes direct or contributory patent infringement, then any patent
+   license granted to You under this License for the Software shall
+   terminate as of the date such litigation is filed.
+
+4. Distribution:
+
+   You may reproduce and distribute copies of the Software in source or
+   binary form, with or without modification, provided that You meet the
+   following conditions:
+
+   a) You shall retain all copyright, patent, trademark and attribution
+      notices in the Software and its source code (including, but not limited
+      to, the notices required by this License and the BSD-2-Clause-Patent
+      notices in the files to which that license applies).
+
+   b) You shall not misrepresent the source of the Software, and shall
+      indicate that the Software is distributed under this License.
+
+5. Disclaimer of Warranty and Limitation of Liability:
+
+   THE SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
+   KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+   NON-INFRINGEMENT, MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+
+   IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY DIRECT,
+   INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+   (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+   SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+   HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+   STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+   IN ANY WAY OUT OF THE USE OF THE SOFTWARE, EVEN IF ADVISED OF THE
+   POSSIBILITY OF SUCH DAMAGE.
+
+6. Language:
+
+   This License is written in both Chinese and English. In the event of any
+   inconsistency between the two versions, the Chinese version shall prevail.
+
+   本许可证同时有中英文版本，若两版本不一致，以中文版为准。
+
+   中文版全文请参见: http://license.coscl.org.cn/MulanPSL2

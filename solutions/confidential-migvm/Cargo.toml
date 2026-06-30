@@ -1,0 +1,37 @@
+[package]
+name = "migvm"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-2-Clause-Patent AND Mulan-PSL-2.0"
+description = "AArch64 MigVM bare-metal payload for CCA/VirtCCA confidential VM migration"
+
+[workspace]
+
+[dependencies]
+linked_list_allocator = "0.10"
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
+spin = "0.9"
+log = { version = "0.4", features = ["max_level_trace", "release_max_level_info"] }
+smoltcp = { version = "0.10", default-features = false, features = [
+    "proto-ipv4",
+    "proto-dhcpv4",
+    "socket-raw",
+    "socket-udp",
+    "socket-tcp",
+    "socket-dhcpv4",
+    "medium-ethernet",
+    "proto-igmp",
+] }
+
+[features]
+default = []
+cca = []
+virtcca = []
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.dev]
+panic = "abort"
