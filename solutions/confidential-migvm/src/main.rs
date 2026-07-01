@@ -45,6 +45,30 @@ pub extern "C" fn _start_rust_impl(fdt_ptr: u64, _reserved: u64) -> ! {
     log::info!("Logger initialized");
     uart_puts("[OK] Logger initialized\n");
 
+    if migvm::trng::init() {
+        uart_puts("[OK] TRNG: RNDR hardware true random enabled\n");
+    } else {
+        uart_puts("[WARN] TRNG: RNDR unavailable, using software PRNG fallback\n");
+    }
+
+    // 探测 RNDR / RNDRRS 连续采样，诊断真随机质量
+    uart_puts("[INFO] TRNG: RNDR  samples:");
+    for _ in 0..16 {
+        match migvm::trng::rndr_probe() {
+            Some(v) => { uart_puts(" "); uart_put_hex(v); }
+            None => uart_puts(" X"),
+        }
+    }
+    uart_puts("\n");
+    uart_puts("[INFO] TRNG: RNDRRS samples:");
+    for _ in 0..16 {
+        match migvm::trng::rndrrs_probe() {
+            Some(v) => { uart_puts(" "); uart_put_hex(v); }
+            None => uart_puts(" X"),
+        }
+    }
+    uart_puts("\n");
+
     match migvm::fdt::parse_fdt(fdt_ptr) {
         Ok(info) => {
             migvm::fdt::print_fdt_info(&info);
