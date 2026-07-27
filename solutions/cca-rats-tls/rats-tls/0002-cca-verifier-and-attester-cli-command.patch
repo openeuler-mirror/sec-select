@@ -1,0 +1,3521 @@
+From 4332a58865b0aa6f2b9cc18293801bf88c0be60c Mon Sep 17 00:00:00 2001
+From: ryk <renjunkai1@h-partners.com>
+Date: Tue, 23 Jun 2026 10:29:06 +0800
+Subject: [PATCH 2/2] cca verifier and attester cli command
+
+---
+ dist/deb/debian/control.in                    |    2 +-
+ dist/rpm/rats_tls.spec.in                     |    1 +
+ samples/CMakeLists.txt                        |    4 +
+ samples/cca-client/CMakeLists.txt             |   18 +
+ samples/cca-client/client.c                   |  249 ++++
+ samples/cca-common/cca_log.c                  | 1045 +++++++++++++++++
+ samples/cca-common/cca_log.h                  |   12 +
+ samples/cca-common/cca_policy.c               |  350 ++++++
+ samples/cca-common/cca_policy.h               |    7 +
+ samples/cca-common/cca_sample.c               |  312 +++++
+ samples/cca-common/cca_sample.h               |   66 ++
+ samples/cca-server/CMakeLists.txt             |   11 +
+ samples/cca-server/server.c                   |  324 +++++
+ scripts/cca_collect_baselines.py              |  222 ++++
+ src/attesters/cca/cca_attester.h              |    4 +
+ src/attesters/cca/cleanup.c                   |    7 +-
+ src/attesters/cca/collect_evidence.c          |   15 +-
+ src/attesters/cca/init.c                      |    7 +-
+ .../internal/rtls_enclave_attester_select.c   |    2 +-
+ src/core/cpu.c                                |   10 +-
+ .../internal/rtls_crypto_wrapper_select.c     |    2 +-
+ src/include/rats-tls/cca.h                    |    1 +
+ .../internal/rtls_tls_wrapper_select.c        |    2 +-
+ src/tls_wrappers/openssl/use_cert.c           |   21 +-
+ src/tls_wrappers/openssl/use_privkey.c        |   10 +-
+ src/verifiers/cca/cca_verifier.h              |    8 +
+ src/verifiers/cca/verify_evidence.c           |  391 ++++--
+ 27 files changed, 2975 insertions(+), 128 deletions(-)
+ create mode 100644 samples/cca-client/CMakeLists.txt
+ create mode 100644 samples/cca-client/client.c
+ create mode 100644 samples/cca-common/cca_log.c
+ create mode 100644 samples/cca-common/cca_log.h
+ create mode 100644 samples/cca-common/cca_policy.c
+ create mode 100644 samples/cca-common/cca_policy.h
+ create mode 100644 samples/cca-common/cca_sample.c
+ create mode 100644 samples/cca-common/cca_sample.h
+ create mode 100644 samples/cca-server/CMakeLists.txt
+ create mode 100644 samples/cca-server/server.c
+ create mode 100755 scripts/cca_collect_baselines.py
+
+diff --git a/dist/deb/debian/control.in b/dist/deb/debian/control.in
+index fc3369e..802babe 100644
+--- a/dist/deb/debian/control.in
++++ b/dist/deb/debian/control.in
+@@ -2,7 +2,7 @@ Source: rats-tls
+ Section: devel
+ Priority: extra
+ Maintainer: shirong <shirong@linux.alibaba.com>
+-Build-Depends: debhelper (>=9), cmake, git, make, autoconf, libtool, gcc, g++, libsgx-dcap-quote-verify-dev, libsgx-dcap-ql-dev, libsgx-uae-service
++Build-Depends: debhelper (>=9), cmake, git, make, autoconf, libtool, gcc, g++, uthash-dev, libsgx-dcap-quote-verify-dev, libsgx-dcap-ql-dev, libsgx-uae-service
+ Standards-Version: 3.9.8
+ Homepage: https://github.com/alibaba/inclavare-containers
+ 
+diff --git a/dist/rpm/rats_tls.spec.in b/dist/rpm/rats_tls.spec.in
+index 246362c..68772b2 100644
+--- a/dist/rpm/rats_tls.spec.in
++++ b/dist/rpm/rats_tls.spec.in
+@@ -27,6 +27,7 @@ BuildRequires: autoconf
+ BuildRequires: libtool
+ BuildRequires: gcc
+ BuildRequires: gcc-c++
++BuildRequires: uthash-devel
+ BuildRequires: libsgx-dcap-quote-verify-devel
+ BuildRequires: libsgx-dcap-ql-devel
+ BuildRequires: libsgx-uae-service
+diff --git a/samples/CMakeLists.txt b/samples/CMakeLists.txt
+index c77319e..cfcae12 100644
+--- a/samples/CMakeLists.txt
++++ b/samples/CMakeLists.txt
+@@ -1,5 +1,9 @@
+ add_subdirectory(rats-tls-client)
+ add_subdirectory(rats-tls-server)
++if(CCA)
++    add_subdirectory(cca-client)
++    add_subdirectory(cca-server)
++endif()
+ if(SGX)
+     add_subdirectory(sgx-stub-enclave)
+ endif()
+diff --git a/samples/cca-client/CMakeLists.txt b/samples/cca-client/CMakeLists.txt
+new file mode 100644
+index 0000000..f25ed68
+--- /dev/null
++++ b/samples/cca-client/CMakeLists.txt
+@@ -0,0 +1,18 @@
++project(cca-client)
++
++find_path(UTHASH_INCLUDE_DIR uthash.h REQUIRED)
++
++set(SOURCES
++    client.c
++    ../cca-common/cca_log.c
++    ../cca-common/cca_policy.c
++    ../cca-common/cca_sample.c)
++add_executable(${PROJECT_NAME} ${SOURCES})
++target_include_directories(${PROJECT_NAME} PRIVATE
++                           ${CMAKE_CURRENT_SOURCE_DIR}/../cca-common
++                           ${CMAKE_CURRENT_SOURCE_DIR}/../../src/include
++                           ${UTHASH_INCLUDE_DIR})
++target_link_libraries(${PROJECT_NAME} ${RTLS_LIB} crypto)
++set_target_properties(${PROJECT_NAME} PROPERTIES INSTALL_RPATH ${RATS_TLS_INSTALL_LIB_PATH})
++
++install(TARGETS ${PROJECT_NAME} DESTINATION ${RATS_TLS_INSTALL_BIN_PATH})
+diff --git a/samples/cca-client/client.c b/samples/cca-client/client.c
+new file mode 100644
+index 0000000..6bab0e7
+--- /dev/null
++++ b/samples/cca-client/client.c
+@@ -0,0 +1,249 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <arpa/inet.h>
++#include <errno.h>
++#include <getopt.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <unistd.h>
++#include <rats-tls/api.h>
++#include <rats-tls/log.h>
++#include "cca_log.h"
++#include "cca_policy.h"
++#include "cca_sample.h"
++
++#define DEFAULT_IP "127.0.0.1"
++#define DEFAULT_PORT 1234
++#define DEFAULT_MESSAGE "Hello from CCA RA-TLS client"
++
++rats_tls_log_level_t global_log_level = RATS_TLS_LOG_LEVEL_DEFAULT;
++
++static void usage(const char *program)
++{
++	printf("Usage: %s [options]\n"
++	       "        --ip/-i value             server IPv4 address (default 127.0.0.1)\n"
++	       "        --port/-p value           server TCP port (default 1234)\n"
++	       "        --message/-M value        echo message\n"
++	       "        --ima-log/-I              parse IMA log and optionally verify baselines\n"
++	       "        --digest/-d value         additionally verify <algorithm> <digest> <path> baselines\n"
++	       "        --bootlog/-g              dump and replay the CCA event log\n"
++	       "        --platform/-P value       verify platform component JSON baselines\n"
++	       "        --firmware/-f value       verify CCA firmware JSON baseline\n"
++	       "        --dump-bootlog            also save boot_log.bin\n"
++	       "        --mutual/-m               enable mutual CCA attestation\n"
++	       "        --log-level/-l value      debug|info|warn|error|fatal|off\n",
++	       program);
++	cca_sample_print_policy_options();
++	puts("        --help/-h                 show this help");
++}
++
++static int configure_policy(int option, const char *value)
++{
++	switch (option) {
++	case 1000:
++		cca_sample_policy.realm_profile = value;
++		return 0;
++	case 1001:
++		cca_sample_policy.platform_profile = value;
++		return 0;
++	case 1002:
++		return cca_sample_parse_hex(value, cca_sample_policy.rim,
++					    sizeof(cca_sample_policy.rim),
++					    &cca_sample_policy.rim_size);
++	case 1003:
++		if (cca_sample_parse_hex(value, cca_sample_policy.implementation_id,
++					 sizeof(cca_sample_policy.implementation_id),
++					 &cca_sample_policy.implementation_id_size))
++			return -1;
++		return cca_sample_policy.implementation_id_size == 32 ? 0 : -1;
++	case 1004:
++		if (cca_sample_parse_hex(value, cca_sample_policy.instance_id,
++					 sizeof(cca_sample_policy.instance_id),
++					 &cca_sample_policy.instance_id_size))
++			return -1;
++		return cca_sample_policy.instance_id_size == 33 ? 0 : -1;
++	default:
++		return -1;
++	}
++}
++
++int main(int argc, char **argv)
++{
++	const char *ip = DEFAULT_IP;
++	const char *message = DEFAULT_MESSAGE;
++	const char *digest_file = NULL;
++	const char *platform_file = NULL;
++	const char *firmware_file = NULL;
++	int port = DEFAULT_PORT;
++	bool mutual = false;
++	bool verify_ima_log = false;
++	bool verify_boot_log = false;
++	bool dump_boot_log = false;
++	bool eventlog_dump = false;
++	rats_tls_log_level_t log_level = RATS_TLS_LOG_LEVEL_INFO;
++	static const struct option options[] = {
++		{ "ip", required_argument, NULL, 'i' },
++		{ "port", required_argument, NULL, 'p' },
++		{ "message", required_argument, NULL, 'M' },
++		{ "ima-log", no_argument, NULL, 'I' },
++		{ "digest", required_argument, NULL, 'd' },
++		{ "bootlog", no_argument, NULL, 'g' },
++		{ "platform", required_argument, NULL, 'P' },
++		{ "firmware", required_argument, NULL, 'f' },
++		{ "dump-bootlog", no_argument, NULL, 1005 },
++		{ "mutual", no_argument, NULL, 'm' },
++		{ "log-level", required_argument, NULL, 'l' },
++		{ "realm-profile", required_argument, NULL, 1000 },
++		{ "platform-profile", required_argument, NULL, 1001 },
++		{ "rim", required_argument, NULL, 1002 },
++		{ "implementation-id", required_argument, NULL, 1003 },
++		{ "instance-id", required_argument, NULL, 1004 },
++		{ "help", no_argument, NULL, 'h' },
++		{ 0, 0, 0, 0 },
++	};
++
++	int option;
++	while ((option = getopt_long(argc, argv, "i:p:M:Id:gP:f:ml:h", options, NULL)) != -1) {
++		switch (option) {
++		case 'i':
++			ip = optarg;
++			break;
++		case 'p':
++			port = atoi(optarg);
++			break;
++		case 'M':
++			message = optarg;
++			break;
++		case 'I':
++			verify_ima_log = true;
++			break;
++		case 'd':
++			digest_file = optarg;
++			verify_ima_log = true;
++			break;
++		case 'g':
++			verify_boot_log = true;
++			dump_boot_log = true;
++			eventlog_dump = true;
++			break;
++		case 'P':
++			platform_file = optarg;
++			break;
++		case 'f':
++			firmware_file = optarg;
++			verify_boot_log = true;
++			break;
++		case 'm':
++			mutual = true;
++			break;
++		case 'l':
++			if (cca_sample_parse_log_level(optarg, &log_level))
++				goto invalid;
++			break;
++		case 'h':
++			usage(argv[0]);
++			return 0;
++		default:
++			if (option == 1005) {
++				verify_boot_log = true;
++				dump_boot_log = true;
++				break;
++			}
++			if (configure_policy(option, optarg))
++				goto invalid;
++			break;
++		}
++	}
++	if (port <= 0 || port > 65535)
++		goto invalid;
++	global_log_level = log_level;
++
++	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
++	if (socket_fd < 0) {
++		RTLS_ERR("socket failed: %s\n", strerror(errno));
++		return 1;
++	}
++	struct sockaddr_in address = {
++		.sin_family = AF_INET,
++		.sin_port = htons((uint16_t)port),
++	};
++	if (inet_pton(AF_INET, ip, &address.sin_addr) != 1 ||
++	    connect(socket_fd, (struct sockaddr *)&address, sizeof(address))) {
++		RTLS_ERR("connect failed: %s\n", strerror(errno));
++		close(socket_fd);
++		return 1;
++	}
++
++	rats_tls_conf_t config = {
++		.log_level = log_level,
++		.cert_algo = RATS_TLS_CERT_ALGO_DEFAULT,
++	};
++	snprintf(config.verifier_type, sizeof(config.verifier_type), "cca");
++	snprintf(config.tls_type, sizeof(config.tls_type), "openssl");
++	snprintf(config.crypto_type, sizeof(config.crypto_type), "openssl");
++	if (mutual) {
++		config.flags |= RATS_TLS_CONF_FLAGS_MUTUAL;
++		snprintf(config.attester_type, sizeof(config.attester_type), "cca");
++	}
++
++	rats_tls_handle handle = NULL;
++	rats_tls_err_t result = rats_tls_init(&config, &handle);
++	if (result != RATS_TLS_ERR_NONE ||
++	    rats_tls_set_verification_callback(&handle, cca_sample_verify_callback) !=
++		    RATS_TLS_ERR_NONE ||
++	    rats_tls_negotiate(handle, socket_fd) != RATS_TLS_ERR_NONE)
++		goto tls_error;
++
++	if (verify_ima_log && cca_verify_ima_log(handle, digest_file))
++		goto tls_error;
++	if (platform_file && cca_verify_platform_file(platform_file))
++		goto tls_error;
++	if (verify_boot_log &&
++	    cca_verify_boot_log(handle, dump_boot_log, eventlog_dump, firmware_file))
++		goto tls_error;
++
++	size_t message_size = strlen(message);
++	if (message_size == 0 || message_size > 4096 ||
++	    cca_sample_send_frame(handle, message, message_size))
++		goto tls_error;
++
++	char response[4096];
++	size_t response_size = 0;
++	if (cca_sample_receive_frame(handle, response, sizeof(response) - 1, &response_size))
++		goto tls_error;
++	response[response_size] = '\0';
++	printf("CCA server: %s\n", response);
++	if (response_size != strlen(message) || memcmp(response, message, response_size)) {
++		RTLS_ERR("server returned an unexpected response\n");
++		goto tls_error;
++	}
++
++	if (cca_sample_send_frame(handle, CCA_SAMPLE_ATTESTATION_PASS,
++				  strlen(CCA_SAMPLE_ATTESTATION_PASS)))
++		goto tls_error;
++	char pass_response[64];
++	size_t pass_response_size = 0;
++	if (cca_sample_receive_frame(handle, pass_response, sizeof(pass_response),
++				     &pass_response_size) ||
++	    pass_response_size != strlen(CCA_SAMPLE_ATTESTATION_PASS) ||
++	    memcmp(pass_response, CCA_SAMPLE_ATTESTATION_PASS, pass_response_size)) {
++		RTLS_ERR("server did not acknowledge successful attestation\n");
++		goto tls_error;
++	}
++	RTLS_INFO("CCA log and baseline verification passed\n");
++
++	rats_tls_cleanup(handle);
++	close(socket_fd);
++	return 0;
++
++tls_error:
++	RTLS_ERR("CCA RA-TLS client failed\n");
++	if (handle)
++		rats_tls_cleanup(handle);
++	close(socket_fd);
++	return 1;
++invalid:
++	usage(argv[0]);
++	return 1;
++}
+diff --git a/samples/cca-common/cca_log.c b/samples/cca-common/cca_log.c
+new file mode 100644
+index 0000000..5fd4834
+--- /dev/null
++++ b/samples/cca-common/cca_log.c
+@@ -0,0 +1,1045 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <ctype.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <openssl/evp.h>
++#include <rats-tls/log.h>
++#include <uthash.h>
++#include "cca_log.h"
++#include "cca_sample.h"
++
++#define SHA1_SIZE	       20U
++#define SHA256_SIZE	       32U
++#define MAX_TEMPLATE_NAME      255U
++#define MAX_TEMPLATE_DATA      (16U * 1024U * 1024U)
++#define MAX_EVENT_DATA	       (16U * 1024U * 1024U)
++#define MAX_IMA_ENTRIES	       100000U
++#define MAX_IMA_BASELINES      100000U
++#define MAX_FIRMWARE_JSON_SIZE (16U * 1024U * 1024U)
++#define HASH_HEX_SIZE	       (SHA256_SIZE * 2U)
++#define MAX_IMA_PATH	       4096U
++#define TPM_ALG_SHA1	       0x0004U
++#define TPM_ALG_SHA256	       0x000bU
++#define TPM_ALG_SHA384	       0x000cU
++#define TPM_ALG_SHA512	       0x000dU
++#define EV_NO_ACTION	       0x00000003U
++#define EV_IPL		       0x0000000dU
++#define EV_EFI_EVENT_BASE      0x80000000U
++#define EV_EFI_BOOT_SERVICES_APPLICATION (EV_EFI_EVENT_BASE + 0x3U)
++
++typedef struct {
++	const uint8_t *data;
++	size_t size;
++	size_t offset;
++} cursor_t;
++
++typedef struct ima_baseline {
++	uint8_t *key;
++	size_t key_size;
++	UT_hash_handle hh;
++} ima_baseline_t;
++
++typedef struct {
++	uint8_t (*efi_images)[SHA256_SIZE];
++	size_t efi_image_count;
++	uint8_t grub_config[SHA256_SIZE];
++	bool has_grub_config;
++	uint8_t kernel[SHA256_SIZE];
++	bool has_kernel;
++	uint8_t initramfs[SHA256_SIZE];
++	bool has_initramfs;
++} firmware_state_t;
++
++typedef struct {
++	char *version;
++	char *kernel;
++	char *initramfs;
++} kernel_reference_t;
++
++typedef struct {
++	char *grub;
++	char *grub_cfg;
++	char *hash_alg;
++	kernel_reference_t *kernels;
++	size_t kernel_count;
++} firmware_reference_t;
++
++typedef struct {
++	uint8_t revision;
++	uint8_t checksum;
++	char oem_id[6];
++	uint8_t cc_type;
++	uint8_t cc_subtype;
++	uint64_t log_length;
++	uint64_t log_address;
++} ccel_table_info_t;
++
++static size_t digest_size(uint16_t algorithm);
++
++static uint64_t get_le64_unaligned(const uint8_t *data)
++{
++	uint64_t value = 0;
++	for (size_t i = 0; i < 8; ++i)
++		value |= (uint64_t)data[i] << (i * 8);
++	return value;
++}
++
++static void print_hex_dump_with_ascii(const uint8_t *data, size_t size, size_t base)
++{
++	char ascii[17] = { 0 };
++	for (size_t i = 0; i < size; ++i) {
++		if (i % 16 == 0) {
++			if (i > 0)
++				printf("  %s\n", ascii);
++			printf("%08zx  ", base + i);
++			memset(ascii, 0, sizeof(ascii));
++		}
++		printf("%02x ", data[i]);
++		ascii[i % 16] = isprint((unsigned char)data[i]) ? (char)data[i] : '.';
++	}
++	if (size % 16) {
++		for (size_t i = size % 16; i < 16; ++i)
++			printf("   ");
++	}
++	printf("  %s\n", ascii);
++}
++
++static int parse_ccel_table(const uint8_t *data, size_t size, ccel_table_info_t *info)
++{
++	if (!data || !info || size < 56 || memcmp(data, "CCEL", 4)) {
++		RTLS_ERR("invalid CCEL ACPI table\n");
++		return -1;
++	}
++	memset(info, 0, sizeof(*info));
++	info->revision = data[8];
++	info->checksum = data[9];
++	memcpy(info->oem_id, data + 10, sizeof(info->oem_id));
++	info->cc_type = data[36];
++	info->cc_subtype = data[37];
++	info->log_length = get_le64_unaligned(data + 40);
++	info->log_address = get_le64_unaligned(data + 48);
++	return 0;
++}
++
++static void print_ccel_table(const uint8_t *data, size_t size, const ccel_table_info_t *info)
++{
++	printf("=> Read CCEL ACPI Table\n");
++	print_hex_dump_with_ascii(data, size, 0);
++	printf("Revision:     %u\n", info->revision);
++	printf("Length:       %zu\n", size);
++	printf("Checksum:     %02x\n", info->checksum);
++	printf("OEM ID:       b'");
++	for (size_t i = 0; i < sizeof(info->oem_id); ++i)
++		printf("%c", isprint((unsigned char)info->oem_id[i]) ? info->oem_id[i] : '.');
++	printf("'\n");
++	printf("CC Type:      %u\n", info->cc_type);
++	printf("CC Sub-type:  %u\n", info->cc_subtype);
++	printf("Log Lenght:   0x%08lx\n", (unsigned long)info->log_length);
++	printf("Log Address:  0x%08lx\n", (unsigned long)info->log_address);
++	printf("\n");
++}
++
++static int get_u16(cursor_t *cursor, uint16_t *value)
++{
++	if (cursor->size - cursor->offset < 2)
++		return -1;
++	const uint8_t *p = cursor->data + cursor->offset;
++	*value = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
++	cursor->offset += 2;
++	return 0;
++}
++
++static int get_u32(cursor_t *cursor, uint32_t *value)
++{
++	if (cursor->size - cursor->offset < 4)
++		return -1;
++	const uint8_t *p = cursor->data + cursor->offset;
++	*value = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
++		 ((uint32_t)p[3] << 24);
++	cursor->offset += 4;
++	return 0;
++}
++
++static int get_bytes(cursor_t *cursor, size_t size, const uint8_t **data)
++{
++	if (size > cursor->size - cursor->offset)
++		return -1;
++	*data = cursor->data + cursor->offset;
++	cursor->offset += size;
++	return 0;
++}
++
++static int sha256_two(const uint8_t first[SHA256_SIZE], const uint8_t second[SHA256_SIZE],
++		      uint8_t output[SHA256_SIZE])
++{
++	EVP_MD_CTX *context = EVP_MD_CTX_new();
++	unsigned int output_size = 0;
++	int result = -1;
++	if (context && EVP_DigestInit_ex(context, EVP_sha256(), NULL) == 1 &&
++	    EVP_DigestUpdate(context, first, SHA256_SIZE) == 1 &&
++	    EVP_DigestUpdate(context, second, SHA256_SIZE) == 1 &&
++	    EVP_DigestFinal_ex(context, output, &output_size) == 1 && output_size == SHA256_SIZE)
++		result = 0;
++	EVP_MD_CTX_free(context);
++	return result;
++}
++
++static int sha256(const void *data, size_t size, uint8_t output[SHA256_SIZE])
++{
++	unsigned int output_size = 0;
++	return EVP_Digest(data, size, output, &output_size, EVP_sha256(), NULL) == 1 &&
++			       output_size == SHA256_SIZE ?
++		       0 :
++		       -1;
++}
++
++static int sha1(const void *data, size_t size, uint8_t output[SHA1_SIZE])
++{
++	unsigned int output_size = 0;
++	return EVP_Digest(data, size, output, &output_size, EVP_sha1(), NULL) == 1 &&
++			       output_size == SHA1_SIZE ?
++		       0 :
++		       -1;
++}
++
++static int receive_log(rats_tls_handle handle, const char *request, size_t maximum, uint8_t **data,
++		       size_t *size)
++{
++	if (cca_sample_send_frame(handle, request, strlen(request)))
++		return -1;
++
++	void *buffer = NULL;
++	if (cca_sample_receive_alloc_frame(handle, &buffer, maximum, size)) {
++		return -1;
++	}
++	*data = buffer;
++	return 0;
++}
++
++static void dump_binary_file(const char *path, const uint8_t *data, size_t size)
++{
++	FILE *file = fopen(path, "wb");
++	if (!file) {
++		RTLS_WARN("failed to open %s for dump: %s\n", path, strerror(errno));
++		return;
++	}
++	if (fwrite(data, 1, size, file) != size)
++		RTLS_WARN("failed to write complete dump file %s\n", path);
++	fclose(file);
++}
++
++static int ima_algorithm(const uint8_t *name, size_t size, uint8_t *algorithm,
++			 size_t *digest_length)
++{
++	if (size == 6 && !strncasecmp((const char *)name, "sha256", size)) {
++		*algorithm = 2;
++		*digest_length = SHA256_SIZE;
++		return 0;
++	}
++	if (size == 4 && !strncasecmp((const char *)name, "sha1", size)) {
++		*algorithm = 1;
++		*digest_length = SHA1_SIZE;
++		return 0;
++	}
++	return -1;
++}
++
++static int build_ima_key(uint8_t algorithm, const uint8_t *digest, size_t digest_length,
++			 const uint8_t *path, size_t path_length, uint8_t *key, size_t capacity,
++			 size_t *key_size)
++{
++	if (!digest || !path || path_length == 0 || path_length > MAX_IMA_PATH ||
++	    1 + digest_length + path_length > capacity)
++		return -1;
++	key[0] = algorithm;
++	memcpy(key + 1, digest, digest_length);
++	memcpy(key + 1 + digest_length, path, path_length);
++	*key_size = 1 + digest_length + path_length;
++	return 0;
++}
++
++static int parse_ima_identity(const uint8_t *template_data, size_t template_size,
++			      uint8_t *algorithm, const uint8_t **digest, size_t *digest_length,
++			      const uint8_t **path, size_t *path_length)
++{
++	cursor_t cursor = { template_data, template_size, 0 };
++	uint32_t field_size;
++	const uint8_t *field;
++	if (get_u32(&cursor, &field_size) || field_size > template_size ||
++	    get_bytes(&cursor, field_size, &field))
++		return -1;
++
++	const uint8_t *separator = memchr(field, ':', field_size);
++	if (!separator)
++		return -1;
++	size_t algorithm_size = (size_t)(separator - field);
++	if (ima_algorithm(field, algorithm_size, algorithm, digest_length))
++		return -1;
++	const uint8_t *digest_start = separator + 1;
++	if (digest_start < field + field_size && *digest_start == '\0')
++		++digest_start;
++	if ((size_t)(field + field_size - digest_start) != *digest_length)
++		return -1;
++	*digest = digest_start;
++
++	if (get_u32(&cursor, &field_size) || field_size == 0 || field_size > MAX_IMA_PATH + 1 ||
++	    get_bytes(&cursor, field_size, path))
++		return -1;
++	*path_length = field_size;
++	while (*path_length && (*path)[*path_length - 1] == '\0')
++		--*path_length;
++	if (*path_length == 0 || *path_length > MAX_IMA_PATH)
++		return -1;
++	return 0;
++}
++
++static void free_ima_baselines(ima_baseline_t **baselines)
++{
++	ima_baseline_t *entry;
++	ima_baseline_t *temporary;
++	HASH_ITER(hh, *baselines, entry, temporary)
++	{
++		HASH_DEL(*baselines, entry);
++		free(entry->key);
++		free(entry);
++	}
++}
++
++static char *read_text_file(const char *path, size_t maximum)
++{
++	FILE *file = fopen(path, "rb");
++	if (!file) {
++		RTLS_ERR("failed to open firmware baseline %s: %s\n", path, strerror(errno));
++		return NULL;
++	}
++	if (fseek(file, 0, SEEK_END)) {
++		fclose(file);
++		return NULL;
++	}
++	long length = ftell(file);
++	if (length <= 0 || (size_t)length > maximum) {
++		RTLS_ERR("firmware baseline %s size %ld is invalid\n", path, length);
++		fclose(file);
++		return NULL;
++	}
++	rewind(file);
++	char *content = malloc((size_t)length + 1);
++	if (!content) {
++		fclose(file);
++		return NULL;
++	}
++	size_t got = fread(content, 1, (size_t)length, file);
++	fclose(file);
++	if (got != (size_t)length) {
++		RTLS_ERR("failed to read firmware baseline %s\n", path);
++		free(content);
++		return NULL;
++	}
++	content[got] = '\0';
++	return content;
++}
++
++static char *extract_json_string(const char *json, const char *key)
++{
++	char pattern[128];
++	if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) >= (int)sizeof(pattern))
++		return NULL;
++	const char *pos = strstr(json, pattern);
++	if (!pos)
++		return NULL;
++	pos += strlen(pattern);
++	while (*pos && isspace((unsigned char)*pos))
++		++pos;
++	if (*pos != ':')
++		return NULL;
++	pos++;
++	while (*pos && isspace((unsigned char)*pos))
++		++pos;
++	if (*pos != '"')
++		return NULL;
++	pos++;
++	const char *end = pos;
++	while (*end && *end != '"') {
++		if (*end == '\\' && end[1])
++			end++;
++		end++;
++	}
++	if (*end != '"')
++		return NULL;
++	size_t length = (size_t)(end - pos);
++	char *value = malloc(length + 1);
++	if (!value)
++		return NULL;
++	memcpy(value, pos, length);
++	value[length] = '\0';
++	return value;
++}
++
++static void free_firmware_reference(firmware_reference_t *reference)
++{
++	if (!reference)
++		return;
++	free(reference->grub);
++	free(reference->grub_cfg);
++	free(reference->hash_alg);
++	for (size_t i = 0; i < reference->kernel_count; ++i) {
++		free(reference->kernels[i].version);
++		free(reference->kernels[i].kernel);
++		free(reference->kernels[i].initramfs);
++	}
++	free(reference->kernels);
++	memset(reference, 0, sizeof(*reference));
++}
++
++static int load_firmware_reference(const char *path, firmware_reference_t *reference)
++{
++	char *json = read_text_file(path, MAX_FIRMWARE_JSON_SIZE);
++	if (!json)
++		return -1;
++	memset(reference, 0, sizeof(*reference));
++	reference->grub = extract_json_string(json, "grub");
++	reference->grub_cfg = extract_json_string(json, "grub.cfg");
++	reference->hash_alg = extract_json_string(json, "hash_alg");
++
++	char *kernels = strstr(json, "\"kernels\"");
++	if (kernels)
++		kernels = strchr(kernels, '[');
++	char *kernels_end = kernels ? strchr(kernels, ']') : NULL;
++	if (kernels && kernels_end) {
++		for (char *pos = kernels; pos < kernels_end; ++pos) {
++			if (*pos == '{')
++				++reference->kernel_count;
++		}
++		if (reference->kernel_count) {
++			reference->kernels =
++				calloc(reference->kernel_count, sizeof(*reference->kernels));
++			if (!reference->kernels)
++				goto error;
++			size_t index = 0;
++			char *pos = kernels;
++			while (index < reference->kernel_count && pos < kernels_end) {
++				char *object = strchr(pos, '{');
++				if (!object || object >= kernels_end)
++					break;
++				char *object_end = strchr(object, '}');
++				if (!object_end || object_end >= kernels_end)
++					break;
++				char saved = object_end[1];
++				object_end[1] = '\0';
++				reference->kernels[index].version =
++					extract_json_string(object, "version");
++				reference->kernels[index].kernel =
++					extract_json_string(object, "kernel");
++				reference->kernels[index].initramfs =
++					extract_json_string(object, "initramfs");
++				object_end[1] = saved;
++				++index;
++				pos = object_end + 1;
++			}
++		}
++	}
++
++	if (!reference->grub || !reference->grub_cfg || !reference->hash_alg ||
++	    reference->kernel_count == 0) {
++		RTLS_ERR("firmware JSON baseline must contain hash_alg, grub, grub.cfg and kernels\n");
++		goto error;
++	}
++	if (strcmp(reference->hash_alg, "sha-256")) {
++		RTLS_ERR("unsupported firmware baseline hash_alg: %s\n", reference->hash_alg);
++		goto error;
++	}
++	free(json);
++	RTLS_INFO("loaded CCA firmware JSON baseline with %zu kernel entries\n",
++		  reference->kernel_count);
++	return 0;
++error:
++	free(json);
++	free_firmware_reference(reference);
++	return -1;
++}
++
++static bool hex_matches(const char *expected, const uint8_t actual[SHA256_SIZE])
++{
++	uint8_t parsed[SHA256_SIZE];
++	size_t parsed_size = 0;
++	return expected && strlen(expected) == HASH_HEX_SIZE &&
++	       !cca_sample_parse_hex(expected, parsed, sizeof(parsed), &parsed_size) &&
++	       parsed_size == SHA256_SIZE && !memcmp(parsed, actual, SHA256_SIZE);
++}
++
++static int verify_firmware_state(const char *path, const firmware_state_t *state)
++{
++	firmware_reference_t reference;
++	if (load_firmware_reference(path, &reference))
++		return -1;
++
++	int result = -1;
++	bool grub_matched = false;
++	for (size_t i = 0; i < state->efi_image_count; ++i) {
++		if (hex_matches(reference.grub, state->efi_images[i])) {
++			grub_matched = true;
++			break;
++		}
++	}
++	if (!grub_matched) {
++		RTLS_ERR("CCA firmware baseline mismatch: grub\n");
++		goto out;
++	}
++	if (!state->has_grub_config || !hex_matches(reference.grub_cfg, state->grub_config)) {
++		RTLS_ERR("CCA firmware baseline mismatch: grub.cfg\n");
++		goto out;
++	}
++
++	bool kernel_matched = false;
++	for (size_t i = 0; i < reference.kernel_count; ++i) {
++		bool version_matched = true;
++		if (state->has_kernel) {
++			if (!hex_matches(reference.kernels[i].kernel, state->kernel))
++				version_matched = false;
++		}
++		if (version_matched && state->has_initramfs) {
++			if (!hex_matches(reference.kernels[i].initramfs, state->initramfs))
++				version_matched = false;
++		}
++		if (version_matched) {
++			RTLS_INFO("CCA firmware baseline matched kernel version: %s\n",
++				  reference.kernels[i].version ? reference.kernels[i].version :
++								  "<unknown>");
++			kernel_matched = true;
++			break;
++		}
++	}
++	if (!kernel_matched) {
++		RTLS_ERR("CCA firmware baseline mismatch: kernel/initramfs\n");
++		goto out;
++	}
++	RTLS_INFO("CCA firmware JSON baseline verification passed\n");
++	result = 0;
++out:
++	free_firmware_reference(&reference);
++	return result;
++}
++
++static bool bytes_contain_text(const uint8_t *data, size_t size, const char *text)
++{
++	size_t text_size = strlen(text);
++	if (text_size == 0)
++		return true;
++	if (text_size > size)
++		return false;
++	for (size_t i = 0; i <= size - text_size; ++i) {
++		if (!memcmp(data + i, text, text_size))
++			return true;
++	}
++	return false;
++}
++
++static int capture_efi_image(firmware_state_t *state, const uint8_t digest[SHA256_SIZE])
++{
++	uint8_t(*next)[SHA256_SIZE] =
++		realloc(state->efi_images, (state->efi_image_count + 1) * SHA256_SIZE);
++	if (!next)
++		return -1;
++	state->efi_images = next;
++	memcpy(state->efi_images[state->efi_image_count], digest, SHA256_SIZE);
++	++state->efi_image_count;
++	return 0;
++}
++
++static int capture_firmware_state(firmware_state_t *state, uint32_t event_type,
++				  const uint8_t digest[SHA256_SIZE], const uint8_t *event,
++				  size_t event_size)
++{
++	if (event_type == EV_EFI_BOOT_SERVICES_APPLICATION)
++		return capture_efi_image(state, digest);
++	if (event_type != EV_IPL)
++		return 0;
++	if (!state->has_grub_config && event &&
++	    bytes_contain_text(event, event_size, "grub.cfg")) {
++		memcpy(state->grub_config, digest, SHA256_SIZE);
++		state->has_grub_config = true;
++		return 0;
++	}
++	if (!state->has_kernel && event &&
++	    bytes_contain_text(event, event_size, "/vmlinuz-") &&
++	    !bytes_contain_text(event, event_size, "grub_cmd:")) {
++		memcpy(state->kernel, digest, SHA256_SIZE);
++		state->has_kernel = true;
++		return 0;
++	}
++	if (!state->has_initramfs && event &&
++	    bytes_contain_text(event, event_size, "/initramfs-") &&
++	    !bytes_contain_text(event, event_size, "grub_cmd:")) {
++		memcpy(state->initramfs, digest, SHA256_SIZE);
++		state->has_initramfs = true;
++		return 0;
++	}
++	return 0;
++}
++
++static int load_ima_baselines(const char *path, ima_baseline_t **baselines, size_t *baseline_count)
++{
++	FILE *file = fopen(path, "r");
++	if (!file) {
++		RTLS_ERR("failed to open IMA digest baseline %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++
++	char line[MAX_IMA_PATH + 256];
++	size_t line_number = 0;
++	int result = -1;
++	while (fgets(line, sizeof(line), file)) {
++		++line_number;
++		if (!strchr(line, '\n') && !feof(file)) {
++			RTLS_ERR("IMA baseline line %zu is too long\n", line_number);
++			goto out;
++		}
++		char *current = line;
++		while (isspace((unsigned char)*current))
++			++current;
++		if (*current == '\0' || *current == '#')
++			continue;
++		if (++*baseline_count > MAX_IMA_BASELINES) {
++			RTLS_ERR("IMA baseline exceeds %u entries\n", MAX_IMA_BASELINES);
++			goto out;
++		}
++
++		char *algorithm_text = current;
++		while (*current && !isspace((unsigned char)*current))
++			++current;
++		if (!*current)
++			goto malformed;
++		*current++ = '\0';
++		while (isspace((unsigned char)*current))
++			++current;
++		char *digest_text = current;
++		while (*current && !isspace((unsigned char)*current))
++			++current;
++		if (!*current)
++			goto malformed;
++		*current++ = '\0';
++		while (isspace((unsigned char)*current))
++			++current;
++		char *file_path = current;
++		char *end = file_path + strlen(file_path);
++		while (end > file_path && isspace((unsigned char)end[-1]))
++			--end;
++		*end = '\0';
++
++		uint8_t algorithm;
++		size_t digest_length;
++		if (ima_algorithm((const uint8_t *)algorithm_text, strlen(algorithm_text),
++				  &algorithm, &digest_length) ||
++		    strlen(digest_text) != digest_length * 2 || *file_path == '\0' ||
++		    strlen(file_path) > MAX_IMA_PATH)
++			goto malformed;
++		uint8_t digest[64];
++		size_t parsed_size = 0;
++		if (cca_sample_parse_hex(digest_text, digest, sizeof(digest), &parsed_size) ||
++		    parsed_size != digest_length)
++			goto malformed;
++
++		size_t key_size = 1 + digest_length + strlen(file_path);
++		ima_baseline_t *entry = calloc(1, sizeof(*entry));
++		if (!entry)
++			goto out;
++		entry->key = malloc(key_size);
++		if (!entry->key ||
++		    build_ima_key(algorithm, digest, digest_length, (const uint8_t *)file_path,
++				  strlen(file_path), entry->key, key_size, &entry->key_size)) {
++			free(entry->key);
++			free(entry);
++			goto out;
++		}
++		ima_baseline_t *existing;
++		HASH_FIND(hh, *baselines, entry->key, entry->key_size, existing);
++		if (existing) {
++			free(entry->key);
++			free(entry);
++			continue;
++		}
++		HASH_ADD_KEYPTR(hh, *baselines, entry->key, entry->key_size, entry);
++	}
++	if (ferror(file) || *baseline_count == 0)
++		goto out;
++	RTLS_INFO("loaded %u unique IMA baselines from %zu entries\n", HASH_COUNT(*baselines),
++		  *baseline_count);
++	result = 0;
++	goto out;
++
++malformed:
++	RTLS_ERR("invalid IMA baseline at line %zu; expected: <sha256|sha1> <hex-digest> <path>\n",
++		 line_number);
++out:
++	fclose(file);
++	if (result)
++		free_ima_baselines(baselines);
++	return result;
++}
++
++static bool supported_ima_template(const uint8_t *name, size_t size)
++{
++	static const char *templates[] = { "ima-ng", "ima-sig", "ima-buf" };
++	while (size && name[size - 1] == '\0')
++		--size;
++	for (size_t i = 0; i < sizeof(templates) / sizeof(templates[0]); ++i) {
++		if (size == strlen(templates[i]) && !memcmp(name, templates[i], size))
++			return true;
++	}
++	return false;
++}
++
++static const char *event_type_name(uint32_t type)
++{
++	switch (type) {
++	case 0x00000000:
++		return "EV_PREBOOT_CERT";
++	case 0x00000001:
++		return "EV_POST_CODE";
++	case EV_NO_ACTION:
++		return "EV_NO_ACTION";
++	case 0x00000004:
++		return "EV_SEPARATOR";
++	case 0x00000005:
++		return "EV_ACTION";
++	case EV_IPL:
++		return "EV_IPL";
++	case EV_EFI_EVENT_BASE + 0x1U:
++		return "EV_EFI_VARIABLE_DRIVER_CONFIG";
++	case EV_EFI_EVENT_BASE + 0x2U:
++		return "EV_EFI_VARIABLE_BOOT";
++	case EV_EFI_BOOT_SERVICES_APPLICATION:
++		return "EV_EFI_BOOT_SERVICES_APPLICATION";
++	case EV_EFI_EVENT_BASE + 0x4U:
++		return "EV_EFI_BOOT_SERVICES_DRIVER";
++	case EV_EFI_EVENT_BASE + 0x5U:
++		return "EV_EFI_RUNTIME_SERVICES_DRIVER";
++	case EV_EFI_EVENT_BASE + 0x6U:
++		return "EV_EFI_GPT_EVENT";
++	case EV_EFI_EVENT_BASE + 0x7U:
++		return "EV_EFI_ACTION";
++	case EV_EFI_EVENT_BASE + 0x8U:
++		return "EV_EFI_PLATFORM_FIRMWARE_BLOB";
++	case EV_EFI_EVENT_BASE + 0x9U:
++		return "EV_EFI_HANDOFF_TABLES";
++	case EV_EFI_EVENT_BASE + 0xe0U:
++		return "EV_EFI_VARIABLE_AUTHORITY";
++	default:
++		return "UNKNOWN";
++	}
++}
++
++static const char *algorithm_name(uint16_t algorithm)
++{
++	switch (algorithm) {
++	case TPM_ALG_SHA1:
++		return "TPM_ALG_SHA1";
++	case TPM_ALG_SHA256:
++		return "TPM_ALG_SHA256";
++	case TPM_ALG_SHA384:
++		return "TPM_ALG_SHA384";
++	case TPM_ALG_SHA512:
++		return "TPM_ALG_SHA512";
++	default:
++		return "UNKNOWN";
++	}
++}
++
++static void print_digest_hex(const uint8_t *digest, size_t size)
++{
++	for (size_t i = 0; i < size; ++i)
++		printf("%02x", digest[i]);
++}
++
++int cca_verify_ima_log(rats_tls_handle handle, const char *digest_file)
++{
++	uint8_t *data = NULL;
++	size_t size = 0;
++	ima_baseline_t *baselines = NULL;
++	size_t baseline_count = 0;
++	if (digest_file && load_ima_baselines(digest_file, &baselines, &baseline_count))
++		return -1;
++	if (receive_log(handle, CCA_SAMPLE_REQUEST_IMA_LOG, CCA_SAMPLE_MAX_LOG_SIZE, &data,
++			&size)) {
++		RTLS_ERR("failed to receive IMA log\n");
++		free_ima_baselines(&baselines);
++		return -1;
++	}
++
++	cursor_t cursor = { data, size, 0 };
++	size_t entry_count = 0;
++	int result = -1;
++	while (cursor.offset < cursor.size) {
++		if (entry_count >= MAX_IMA_ENTRIES) {
++			RTLS_ERR("IMA log exceeds %u entries\n", MAX_IMA_ENTRIES);
++			goto out;
++		}
++		uint32_t pcr, name_size, template_size;
++		const uint8_t *header_digest, *name, *template_data;
++		if (get_u32(&cursor, &pcr) || get_bytes(&cursor, SHA1_SIZE, &header_digest) ||
++		    get_u32(&cursor, &name_size) || name_size == 0 ||
++		    name_size > MAX_TEMPLATE_NAME || get_bytes(&cursor, name_size, &name) ||
++		    get_u32(&cursor, &template_size) || template_size > MAX_TEMPLATE_DATA ||
++		    get_bytes(&cursor, template_size, &template_data)) {
++			RTLS_ERR("invalid IMA binary log entry at offset %zu\n", cursor.offset);
++			goto out;
++		}
++		if (!supported_ima_template(name, name_size)) {
++			RTLS_ERR("unsupported IMA template: %.*s\n", (int)name_size, name);
++			goto out;
++		}
++		uint8_t calculated_header_digest[SHA1_SIZE];
++		if (sha1(template_data, template_size, calculated_header_digest) ||
++		    memcmp(header_digest, calculated_header_digest, SHA1_SIZE)) {
++			RTLS_ERR("IMA template hash mismatch at entry %zu\n", entry_count);
++			goto out;
++		}
++
++		uint8_t algorithm;
++		const uint8_t *file_digest;
++		const uint8_t *file_path;
++		size_t file_digest_size;
++		size_t file_path_size;
++		if (parse_ima_identity(template_data, template_size, &algorithm, &file_digest,
++				       &file_digest_size, &file_path, &file_path_size)) {
++			RTLS_ERR("failed to parse IMA identity at entry %zu\n", entry_count);
++			goto out;
++		}
++		if (baselines && !(file_path_size == strlen("boot_aggregate") &&
++				   !memcmp(file_path, "boot_aggregate", file_path_size))) {
++			uint8_t key[1 + 64 + MAX_IMA_PATH];
++			size_t key_size;
++			ima_baseline_t *baseline;
++			if (build_ima_key(algorithm, file_digest, file_digest_size, file_path,
++					  file_path_size, key, sizeof(key), &key_size))
++				goto out;
++			HASH_FIND(hh, baselines, key, key_size, baseline);
++			if (!baseline) {
++				RTLS_ERR("IMA baseline mismatch at entry %zu: %.*s\n", entry_count,
++					 (int)file_path_size, file_path);
++				goto out;
++			}
++		}
++
++		++entry_count;
++	}
++
++	if (entry_count == 0) {
++		RTLS_ERR("IMA log is empty\n");
++		goto out;
++	}
++	RTLS_INFO("IMA log verification passed (%zu entries)%s\n", entry_count,
++		  baselines ? " with application baselines" : "");
++	result = 0;
++out:
++	free_ima_baselines(&baselines);
++	free(data);
++	return result;
++}
++
++static size_t digest_size(uint16_t algorithm)
++{
++	switch (algorithm) {
++	case TPM_ALG_SHA1:
++		return 20;
++	case TPM_ALG_SHA256:
++		return 32;
++	case TPM_ALG_SHA384:
++		return 48;
++	case TPM_ALG_SHA512:
++		return 64;
++	default:
++		return 0;
++	}
++}
++
++int cca_verify_boot_log(rats_tls_handle handle, bool dump_boot_log, bool eventlog_dump,
++			const char *firmware_file)
++{
++	uint8_t *ccel_table = NULL;
++	size_t ccel_table_size = 0;
++	uint8_t *data = NULL;
++	size_t size = 0;
++	firmware_state_t firmware_state;
++	memset(&firmware_state, 0, sizeof(firmware_state));
++	if (!cca_sample_realm_measurements.valid ||
++	    receive_log(handle, CCA_SAMPLE_REQUEST_CCEL_TABLE, 1024U * 1024U, &ccel_table,
++			&ccel_table_size)) {
++		RTLS_ERR("failed to receive CCA CCEL table\n");
++		free(ccel_table);
++		return -1;
++	}
++	RTLS_INFO("received CCA CCEL table (%zu bytes)\n", ccel_table_size);
++	if (dump_boot_log)
++		dump_binary_file("ccel.bin", ccel_table, ccel_table_size);
++	ccel_table_info_t ccel_info;
++	if (parse_ccel_table(ccel_table, ccel_table_size, &ccel_info))
++		goto out;
++	if (eventlog_dump)
++		print_ccel_table(ccel_table, ccel_table_size, &ccel_info);
++
++	if (receive_log(handle, CCA_SAMPLE_REQUEST_EVENT_LOG, 5U * 1024U * 1024U, &data, &size)) {
++		RTLS_ERR("failed to receive CCA event log\n");
++		free(ccel_table);
++		free(data);
++		return -1;
++	}
++	RTLS_INFO("received CCA event log (%zu bytes)\n", size);
++	if (dump_boot_log) {
++		dump_binary_file("event_log.bin", data, size);
++		dump_binary_file("boot_log.bin", data, size);
++	}
++
++	cursor_t cursor = { data, size, 0 };
++	uint8_t replay[2][SHA256_SIZE] = { 0 };
++	bool used[2] = { false };
++	size_t entry_count = 0;
++	int result = -1;
++	if (eventlog_dump)
++		printf("=> Read Event Log Data - Address: 0x%lx(0x%lx)\n",
++		       (unsigned long)ccel_info.log_address, (unsigned long)size);
++	while (cursor.offset < cursor.size) {
++		size_t entry_start = cursor.offset;
++		uint32_t registry, event_type, digest_count, event_size;
++		if (get_u32(&cursor, &registry) || get_u32(&cursor, &event_type))
++			goto malformed;
++
++		/*
++		 * Match GTA's eventlog-rs parser: the first eight bytes of each entry
++		 * form a stop flag. CCEL buffers may be padded with either 0xff or 0x00.
++		 */
++		if ((registry == UINT32_MAX && event_type == UINT32_MAX) ||
++		    (registry == 0 && event_type == 0))
++			break;
++
++		/* The first entry is the legacy TCG_PCR_EVENT carrying Spec ID Event03. */
++		if (entry_count == 0 && event_type == EV_NO_ACTION) {
++			const uint8_t *legacy_digest, *spec_event;
++			uint32_t spec_event_size;
++			if (get_bytes(&cursor, SHA1_SIZE, &legacy_digest) ||
++			    get_u32(&cursor, &spec_event_size) ||
++			    spec_event_size > MAX_EVENT_DATA ||
++			    get_bytes(&cursor, spec_event_size, &spec_event) ||
++			    spec_event_size < 29 || memcmp(spec_event, "Spec ID Event03", 15)) {
++				goto malformed;
++			}
++			cursor_t spec = { spec_event, spec_event_size, 24 };
++			uint32_t algorithm_count;
++			if (get_u32(&spec, &algorithm_count) || algorithm_count > 16)
++				goto malformed;
++			for (uint32_t i = 0; i < algorithm_count; ++i) {
++				uint16_t algorithm, size_of_digest;
++				if (get_u16(&spec, &algorithm) || get_u16(&spec, &size_of_digest) ||
++				    digest_size(algorithm) != size_of_digest)
++					goto malformed;
++			}
++			const uint8_t *vendor_size_data, *vendor;
++			if (get_bytes(&spec, 1, &vendor_size_data) ||
++			    get_bytes(&spec, *vendor_size_data, &vendor))
++				goto malformed;
++			if (eventlog_dump) {
++				printf("\n==== CCA Event Log Entry - %zu [0x%lx] ====\n",
++				       entry_count,
++				       (unsigned long)(ccel_info.log_address + entry_start));
++				printf("REM               : %u\n", registry > 0 ? registry - 1 : 0);
++				printf("Type              : 0x%x (%s)\n", event_type,
++				       event_type_name(event_type));
++				printf("Algorithms Number : %u\n", algorithm_count);
++				printf("RAW DATA: ----------------------------------------------\n");
++				print_hex_dump_with_ascii(cursor.data + entry_start,
++							  cursor.offset - entry_start,
++							  ccel_info.log_address + entry_start);
++				printf("RAW DATA: ----------------------------------------------\n");
++			}
++			(void)legacy_digest;
++			(void)vendor;
++			++entry_count;
++			continue;
++		}
++
++		if (get_u32(&cursor, &digest_count) || digest_count == 0 || digest_count > 16)
++			goto malformed;
++		const uint8_t *sha256_digest = NULL;
++		uint16_t first_algorithm = 0;
++		const uint8_t *first_digest = NULL;
++		size_t first_digest_size = 0;
++		for (uint32_t i = 0; i < digest_count; ++i) {
++			uint16_t algorithm;
++			const uint8_t *digest;
++			if (get_u16(&cursor, &algorithm))
++				goto malformed;
++			size_t current_size = digest_size(algorithm);
++			if (!current_size || get_bytes(&cursor, current_size, &digest))
++				goto malformed;
++			if (i == 0) {
++				first_algorithm = algorithm;
++				first_digest = digest;
++				first_digest_size = current_size;
++			}
++			if (algorithm == TPM_ALG_SHA256)
++				sha256_digest = digest;
++		}
++		const uint8_t *event;
++		if (get_u32(&cursor, &event_size) || event_size > MAX_EVENT_DATA ||
++		    get_bytes(&cursor, event_size, &event))
++			goto malformed;
++		if (eventlog_dump) {
++			printf("\n==== CCA Event Log Entry - %zu [0x%lx] ====\n", entry_count,
++			       (unsigned long)(ccel_info.log_address + entry_start));
++			printf("REM               : %u\n", registry > 0 ? registry - 1 : 0);
++			printf("Type              : 0x%x (%s)\n", event_type,
++			       event_type_name(event_type));
++			printf("Length            : %zu\n", cursor.offset - entry_start);
++			printf("Algorithms ID     : %u (%s)\n", first_algorithm,
++			       algorithm_name(first_algorithm));
++			if (first_digest) {
++				printf("Digest[0]         : ");
++				print_digest_hex(first_digest, first_digest_size);
++				printf("\n");
++			}
++			printf("RAW DATA: ----------------------------------------------\n");
++			print_hex_dump_with_ascii(cursor.data + entry_start, cursor.offset - entry_start,
++						  ccel_info.log_address + entry_start);
++			printf("RAW DATA: ----------------------------------------------\n");
++		}
++
++		/* GTA CCA boot-log policy validates measurement registries 1 and 2. */
++		if (registry >= 1 && registry <= 2 && sha256_digest) {
++			uint8_t next[SHA256_SIZE];
++			if (sha256_two(replay[registry - 1], sha256_digest, next))
++				goto out;
++			memcpy(replay[registry - 1], next, sizeof(next));
++			used[registry - 1] = true;
++		}
++		if (firmware_file && sha256_digest &&
++		    capture_firmware_state(&firmware_state, event_type, sha256_digest, event,
++					   event_size))
++			goto out;
++		++entry_count;
++	}
++
++	for (size_t i = 0; i < 2; ++i) {
++		if (!used[i] || cca_sample_realm_measurements.rem_size[i] != SHA256_SIZE ||
++		    memcmp(replay[i], cca_sample_realm_measurements.rem[i], SHA256_SIZE)) {
++			RTLS_ERR("boot log replay does not match CCA REM%zu\n", i);
++			goto out;
++		}
++		RTLS_INFO("boot log replay matched CCA REM%zu\n", i);
++	}
++	if (firmware_file && verify_firmware_state(firmware_file, &firmware_state))
++		goto out;
++	RTLS_INFO("CCA boot log verification passed (%zu entries)\n", entry_count);
++	result = 0;
++	goto out;
++
++malformed:
++	RTLS_ERR("invalid CCA boot log entry at offset %zu\n", cursor.offset);
++out:
++	free(firmware_state.efi_images);
++	free(ccel_table);
++	free(data);
++	return result;
++}
+diff --git a/samples/cca-common/cca_log.h b/samples/cca-common/cca_log.h
+new file mode 100644
+index 0000000..1020172
+--- /dev/null
++++ b/samples/cca-common/cca_log.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#ifndef _RATS_TLS_CCA_LOG_H
++#define _RATS_TLS_CCA_LOG_H
++
++#include <stdbool.h>
++#include <rats-tls/api.h>
++
++int cca_verify_ima_log(rats_tls_handle handle, const char *digest_file);
++int cca_verify_boot_log(rats_tls_handle handle, bool dump_boot_log, bool eventlog_dump,
++			const char *firmware_file);
++
++#endif
+diff --git a/samples/cca-common/cca_policy.c b/samples/cca-common/cca_policy.c
+new file mode 100644
+index 0000000..3648a1e
+--- /dev/null
++++ b/samples/cca-common/cca_policy.c
+@@ -0,0 +1,350 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <ctype.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <rats-tls/log.h>
++#include "cca_policy.h"
++#include "cca_sample.h"
++
++#define MAX_PLATFORM_BASELINES 100000U
++#define MAX_JSON_FILE_SIZE     (16U * 1024U * 1024U)
++#define MAX_JSON_FIELD	       512U
++
++typedef struct {
++	char firmware_name[MAX_JSON_FIELD];
++	char measurement[MAX_JSON_FIELD];
++	char firmware_version[MAX_JSON_FIELD];
++	char hash_algorithm[MAX_JSON_FIELD];
++	char signer_id[MAX_JSON_FIELD];
++	bool has_signer_id;
++	bool matched;
++} platform_baseline_t;
++
++static char *skip_space(char *text)
++{
++	while (*text && isspace((unsigned char)*text))
++		++text;
++	return text;
++}
++
++static const char *skip_const_space(const char *text)
++{
++	while (*text && isspace((unsigned char)*text))
++		++text;
++	return text;
++}
++
++static bool token_is_wildcard(const char *token)
++{
++	return !token || token[0] == '\0' || !strcmp(token, "-") || !strcmp(token, "*");
++}
++
++static bool text_matches(const char *expected, const char *actual)
++{
++	return token_is_wildcard(expected) || !strcmp(expected, actual);
++}
++
++static bool hash_algorithm_matches(const char *expected, const char *actual)
++{
++	if (text_matches(expected, actual))
++		return true;
++	if (!strcmp(expected, "sha256") && !strcmp(actual, "sha-256"))
++		return true;
++	if (!strcmp(expected, "sha384") && !strcmp(actual, "sha-384"))
++		return true;
++	if (!strcmp(expected, "sha512") && !strcmp(actual, "sha-512"))
++		return true;
++	return false;
++}
++
++static bool bytes_match_hex(const char *expected, const uint8_t *actual, size_t actual_size)
++{
++	if (token_is_wildcard(expected))
++		return true;
++	uint8_t parsed[CCA_SAMPLE_MAX_COMPONENT_DIGEST];
++	size_t parsed_size = 0;
++	if (cca_sample_parse_hex(expected, parsed, sizeof(parsed), &parsed_size))
++		return false;
++	return parsed_size == actual_size && !memcmp(parsed, actual, actual_size);
++}
++
++static char *read_file(const char *path)
++{
++	FILE *file = fopen(path, "rb");
++	if (!file) {
++		RTLS_ERR("failed to open CCA platform baseline %s: %s\n", path, strerror(errno));
++		return NULL;
++	}
++	if (fseek(file, 0, SEEK_END)) {
++		RTLS_ERR("failed to seek CCA platform baseline %s\n", path);
++		fclose(file);
++		return NULL;
++	}
++	long size = ftell(file);
++	if (size <= 0 || size > (long)MAX_JSON_FILE_SIZE) {
++		RTLS_ERR("CCA platform baseline %s size %ld is invalid\n", path, size);
++		fclose(file);
++		return NULL;
++	}
++	rewind(file);
++	char *content = malloc((size_t)size + 1);
++	if (!content) {
++		fclose(file);
++		return NULL;
++	}
++	size_t got = fread(content, 1, (size_t)size, file);
++	if (got != (size_t)size) {
++		RTLS_ERR("failed to read CCA platform baseline %s\n", path);
++		free(content);
++		fclose(file);
++		return NULL;
++	}
++	content[got] = '\0';
++	fclose(file);
++	return content;
++}
++
++static char *find_json_key(char *json, const char *key)
++{
++	char pattern[128];
++	if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) >= (int)sizeof(pattern))
++		return NULL;
++	return strstr(json, pattern);
++}
++
++static int extract_json_string(const char *object, const char *key, char *output, size_t capacity)
++{
++	char pattern[128];
++	if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) >= (int)sizeof(pattern))
++		return -1;
++	const char *pos = strstr(object, pattern);
++	if (!pos)
++		return 1;
++	pos += strlen(pattern);
++	pos = skip_const_space(pos);
++	if (*pos != ':')
++		return -1;
++	pos = skip_const_space(pos + 1);
++	if (*pos != '"')
++		return -1;
++	++pos;
++
++	size_t written = 0;
++	while (*pos && *pos != '"') {
++		if (*pos == '\\') {
++			++pos;
++			if (!*pos)
++				return -1;
++		}
++		if (written + 1 >= capacity)
++			return -1;
++		output[written++] = *pos++;
++	}
++	if (*pos != '"')
++		return -1;
++	output[written] = '\0';
++	return 0;
++}
++
++static int extract_required_json_string(const char *object, const char *key, char *output,
++					size_t capacity)
++{
++	int result = extract_json_string(object, key, output, capacity);
++	if (result == 1)
++		RTLS_ERR("CCA platform baseline component missing required field '%s'\n", key);
++	else if (result)
++		RTLS_ERR("CCA platform baseline component has invalid field '%s'\n", key);
++	return result;
++}
++
++static int extract_first_available_string(const char *object, const char *first_key,
++					  const char *second_key, char *output, size_t capacity)
++{
++	int result = extract_json_string(object, first_key, output, capacity);
++	if (result == 0 || result < 0)
++		return result;
++	return extract_required_json_string(object, second_key, output, capacity);
++}
++
++static char *find_measure_array(char *json)
++{
++	char *key = find_json_key(json, "measure_value");
++	if (!key)
++		key = find_json_key(json, "measure-values");
++	if (!key)
++		key = find_json_key(json, "measure_values");
++	if (!key)
++		return NULL;
++	char *array = strchr(key, '[');
++	return array ? array + 1 : NULL;
++}
++
++static int load_platform_baselines(const char *path, platform_baseline_t **baselines,
++				   size_t *baseline_count)
++{
++	char *json = read_file(path);
++	if (!json)
++		return -1;
++
++	char *array = find_measure_array(json);
++	if (!array) {
++		RTLS_ERR("CCA platform baseline JSON must contain measure_value array\n");
++		free(json);
++		return -1;
++	}
++
++	platform_baseline_t *entries = NULL;
++	size_t count = 0;
++	char *pos = array;
++	for (;;) {
++		pos = skip_space(pos);
++		if (*pos == ']')
++			break;
++		if (*pos == ',') {
++			++pos;
++			continue;
++		}
++		if (*pos != '{') {
++			RTLS_ERR("invalid CCA platform baseline JSON near offset %td\n",
++				 pos - json);
++			free(entries);
++			free(json);
++			return -1;
++		}
++
++		char *object_start = pos;
++		char *object_end = strchr(object_start, '}');
++		if (!object_end) {
++			RTLS_ERR("unterminated CCA platform baseline component object\n");
++			free(entries);
++			free(json);
++			return -1;
++		}
++		*object_end = '\0';
++		if (count >= MAX_PLATFORM_BASELINES) {
++			RTLS_ERR("CCA platform baseline exceeds %u entries\n",
++				 MAX_PLATFORM_BASELINES);
++			free(entries);
++			free(json);
++			return -1;
++		}
++		platform_baseline_t *next = realloc(entries, (count + 1) * sizeof(*entries));
++		if (!next) {
++			free(entries);
++			free(json);
++			return -1;
++		}
++		entries = next;
++		memset(&entries[count], 0, sizeof(entries[count]));
++
++		if (extract_first_available_string(object_start, "firware_name", "firmware_name",
++						   entries[count].firmware_name,
++						   sizeof(entries[count].firmware_name)) ||
++		    extract_required_json_string(object_start, "measurement",
++						 entries[count].measurement,
++						 sizeof(entries[count].measurement)) ||
++		    extract_first_available_string(object_start, "firware_version",
++						   "firmware_version",
++						   entries[count].firmware_version,
++						   sizeof(entries[count].firmware_version)) ||
++		    extract_required_json_string(object_start, "hash_algorithm",
++						 entries[count].hash_algorithm,
++						 sizeof(entries[count].hash_algorithm))) {
++			free(entries);
++			free(json);
++			return -1;
++		}
++
++		int signer_result = extract_json_string(object_start, "signer_id",
++							entries[count].signer_id,
++							sizeof(entries[count].signer_id));
++		if (signer_result < 0) {
++			RTLS_ERR("CCA platform baseline component has invalid field 'signer_id'\n");
++			free(entries);
++			free(json);
++			return -1;
++		}
++		entries[count].has_signer_id = signer_result == 0;
++		++count;
++		pos = object_end + 1;
++	}
++
++	free(json);
++	if (count == 0) {
++		RTLS_ERR("CCA platform baseline JSON has no measure_value entries\n");
++		free(entries);
++		return -1;
++	}
++	*baselines = entries;
++	*baseline_count = count;
++	RTLS_INFO("loaded %zu CCA platform JSON baselines\n", count);
++	return 0;
++}
++
++static bool component_matches_baseline(const cca_sample_sw_component_t *component,
++				       const platform_baseline_t *baseline)
++{
++	return text_matches(baseline->firmware_name, component->component_type) &&
++	       hash_algorithm_matches(baseline->hash_algorithm, component->hash_algorithm) &&
++	       bytes_match_hex(baseline->measurement, component->measurement,
++			       component->measurement_size) &&
++	       text_matches(baseline->firmware_version, component->version) &&
++	       (!baseline->has_signer_id ||
++		bytes_match_hex(baseline->signer_id, component->signer_id,
++				component->signer_id_size));
++}
++
++int cca_verify_platform_file(const char *path)
++{
++	if (!cca_sample_platform_measurements.valid) {
++		RTLS_ERR("CCA platform claims are unavailable for platform baseline verification\n");
++		return -1;
++	}
++
++	platform_baseline_t *baselines = NULL;
++	size_t baseline_count = 0;
++	if (load_platform_baselines(path, &baselines, &baseline_count))
++		return -1;
++
++	int result = -1;
++	for (size_t i = 0; i < cca_sample_platform_measurements.component_count; ++i) {
++		const cca_sample_sw_component_t *component =
++			&cca_sample_platform_measurements.components[i];
++		bool matched = false;
++		for (size_t j = 0; j < baseline_count; ++j) {
++			if (text_matches(baselines[j].firmware_name, component->component_type)) {
++				if (!component_matches_baseline(component, &baselines[j])) {
++					RTLS_ERR("CCA platform baseline mismatch for component '%s'\n",
++						 component->component_type);
++					goto out;
++				}
++				baselines[j].matched = true;
++				matched = true;
++				break;
++			}
++		}
++		if (!matched) {
++			RTLS_ERR("CCA platform baseline missing component '%s'\n",
++				 component->component_type);
++			goto out;
++		}
++	}
++
++	for (size_t i = 0; i < baseline_count; ++i) {
++		if (!baselines[i].matched) {
++			RTLS_ERR("CCA platform baseline component '%s' was not found in token\n",
++				 baselines[i].firmware_name);
++			goto out;
++		}
++	}
++
++	RTLS_INFO("CCA platform JSON baseline verification passed (%zu entries)\n",
++		  baseline_count);
++	result = 0;
++out:
++	free(baselines);
++	return result;
++}
+diff --git a/samples/cca-common/cca_policy.h b/samples/cca-common/cca_policy.h
+new file mode 100644
+index 0000000..4beeb5b
+--- /dev/null
++++ b/samples/cca-common/cca_policy.h
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#ifndef _RATS_TLS_CCA_POLICY_H
++#define _RATS_TLS_CCA_POLICY_H
++
++int cca_verify_platform_file(const char *path);
++
++#endif
+diff --git a/samples/cca-common/cca_sample.c b/samples/cca-common/cca_sample.c
+new file mode 100644
+index 0000000..db668da
+--- /dev/null
++++ b/samples/cca-common/cca_sample.c
+@@ -0,0 +1,312 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <ctype.h>
++#include <arpa/inet.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <rats-tls/log.h>
++#include "cca_sample.h"
++
++cca_sample_policy_t cca_sample_policy;
++cca_sample_realm_measurements_t cca_sample_realm_measurements;
++cca_sample_platform_measurements_t cca_sample_platform_measurements;
++
++static int hex_value(char c)
++{
++	if (c >= '0' && c <= '9')
++		return c - '0';
++	if (c >= 'a' && c <= 'f')
++		return c - 'a' + 10;
++	if (c >= 'A' && c <= 'F')
++		return c - 'A' + 10;
++	return -1;
++}
++
++int cca_sample_parse_hex(const char *text, uint8_t *output, size_t capacity, size_t *output_size)
++{
++	if (!text || !output || !output_size)
++		return -1;
++
++	size_t length = strlen(text);
++	if (length == 0 || (length & 1) || length / 2 > capacity)
++		return -1;
++
++	for (size_t i = 0; i < length / 2; ++i) {
++		int high = hex_value(text[i * 2]);
++		int low = hex_value(text[i * 2 + 1]);
++		if (high < 0 || low < 0)
++			return -1;
++		output[i] = (uint8_t)((high << 4) | low);
++	}
++	*output_size = length / 2;
++	return 0;
++}
++
++static void print_hex(const char *name, const rtls_cca_buffer_t *value)
++{
++	printf("%s: ", name);
++	if (!value->data) {
++		printf("<not present>\n");
++		return;
++	}
++	for (size_t i = 0; i < value->size; ++i)
++		printf("%02x", value->data[i]);
++	printf("\n");
++}
++
++static void print_text(const char *name, const rtls_cca_buffer_t *value)
++{
++	if (!value->data) {
++		printf("%s: <not present>\n", name);
++		return;
++	}
++	printf("%s: %.*s\n", name, (int)value->size, (const char *)value->data);
++}
++
++static bool buffer_matches_text(const rtls_cca_buffer_t *actual, const char *expected)
++{
++	size_t expected_size = strlen(expected);
++	return actual->size == expected_size &&
++	       !memcmp(actual->data, expected, expected_size);
++}
++
++static bool buffer_matches_bytes(const rtls_cca_buffer_t *actual, const uint8_t *expected,
++				 size_t expected_size)
++{
++	return actual->size == expected_size && !memcmp(actual->data, expected, expected_size);
++}
++
++static int copy_text_field(char *destination, size_t capacity, const rtls_cca_buffer_t *source)
++{
++	if (!source->data || source->size == 0) {
++		destination[0] = '\0';
++		return 0;
++	}
++	if (source->size >= capacity)
++		return -1;
++	memcpy(destination, source->data, source->size);
++	destination[source->size] = '\0';
++	return 0;
++}
++
++static int copy_binary_field(uint8_t *destination, size_t capacity, size_t *destination_size,
++			     const rtls_cca_buffer_t *source)
++{
++	*destination_size = 0;
++	if (!source->data || source->size == 0)
++		return 0;
++	if (source->size > capacity)
++		return -1;
++	memcpy(destination, source->data, source->size);
++	*destination_size = source->size;
++	return 0;
++}
++
++int cca_sample_verify_callback(void *args)
++{
++	rtls_evidence_t *evidence = args;
++	if (!evidence || evidence->type != CCA_EVIDENCE) {
++		RTLS_ERR("verification callback received non-CCA evidence\n");
++		return 0;
++	}
++
++	const rtls_cca_realm_claims_t *realm = &evidence->cca.realm;
++	const rtls_cca_platform_claims_t *platform = &evidence->cca.platform;
++
++	print_text("CCA realm profile", &realm->profile);
++	print_hex("CCA realm initial measurement", &realm->initial_measurement);
++	for (size_t i = 0; i < RATS_TLS_CCA_REM_COUNT; ++i) {
++		char name[64];
++		snprintf(name, sizeof(name), "CCA realm extensible measurement[%zu]", i);
++		print_hex(name, &realm->extensible_measurements[i]);
++		if (realm->extensible_measurements[i].size >
++		    sizeof(cca_sample_realm_measurements.rem[i])) {
++			RTLS_ERR("CCA REM%zu is too large\n", i);
++			return 0;
++		}
++		cca_sample_realm_measurements.rem_size[i] =
++			realm->extensible_measurements[i].size;
++		if (realm->extensible_measurements[i].size)
++			memcpy(cca_sample_realm_measurements.rem[i],
++			       realm->extensible_measurements[i].data,
++			       realm->extensible_measurements[i].size);
++	}
++	print_text("CCA realm hash algorithm", &realm->hash_algorithm);
++	print_text("CCA platform profile", &platform->profile);
++	print_hex("CCA platform implementation ID", &platform->implementation_id);
++	print_hex("CCA platform instance ID", &platform->instance_id);
++	printf("CCA platform lifecycle: 0x%04x\n", platform->lifecycle);
++	print_text("CCA platform hash algorithm", &platform->hash_algorithm);
++
++	memset(&cca_sample_platform_measurements, 0, sizeof(cca_sample_platform_measurements));
++	if (platform->software_component_count > CCA_SAMPLE_MAX_SW_COMPONENTS) {
++		RTLS_ERR("CCA software component count %zu exceeds %u\n",
++			 platform->software_component_count, CCA_SAMPLE_MAX_SW_COMPONENTS);
++		return 0;
++	}
++	cca_sample_platform_measurements.component_count = platform->software_component_count;
++	for (size_t i = 0; i < platform->software_component_count; ++i) {
++		const rtls_cca_sw_component_t *component = &platform->software_components[i];
++		printf("CCA software component[%zu]\n", i);
++		print_text("  type", &component->component_type);
++		print_hex("  measurement", &component->measurement);
++		print_text("  version", &component->version);
++		print_hex("  signer ID", &component->signer_id);
++		print_text("  hash algorithm", &component->hash_algorithm);
++		cca_sample_sw_component_t *snapshot =
++			&cca_sample_platform_measurements.components[i];
++		if (copy_text_field(snapshot->component_type, sizeof(snapshot->component_type),
++				    &component->component_type) ||
++		    copy_binary_field(snapshot->measurement, sizeof(snapshot->measurement),
++				      &snapshot->measurement_size, &component->measurement) ||
++		    copy_text_field(snapshot->version, sizeof(snapshot->version),
++				    &component->version) ||
++		    copy_binary_field(snapshot->signer_id, sizeof(snapshot->signer_id),
++				      &snapshot->signer_id_size, &component->signer_id) ||
++		    copy_text_field(snapshot->hash_algorithm, sizeof(snapshot->hash_algorithm),
++				    &component->hash_algorithm)) {
++			RTLS_ERR("failed to copy CCA software component[%zu]\n", i);
++			return 0;
++		}
++	}
++
++	if (cca_sample_policy.realm_profile &&
++	    !buffer_matches_text(&realm->profile, cca_sample_policy.realm_profile)) {
++		RTLS_ERR("CCA realm profile baseline mismatch\n");
++		return 0;
++	}
++	if (cca_sample_policy.platform_profile &&
++	    !buffer_matches_text(&platform->profile, cca_sample_policy.platform_profile)) {
++		RTLS_ERR("CCA platform profile baseline mismatch\n");
++		return 0;
++	}
++	if (cca_sample_policy.rim_size &&
++	    !buffer_matches_bytes(&realm->initial_measurement, cca_sample_policy.rim,
++				  cca_sample_policy.rim_size)) {
++		RTLS_ERR("CCA RIM baseline mismatch\n");
++		return 0;
++	}
++	if (cca_sample_policy.implementation_id_size &&
++	    !buffer_matches_bytes(&platform->implementation_id,
++				  cca_sample_policy.implementation_id,
++				  cca_sample_policy.implementation_id_size)) {
++		RTLS_ERR("CCA implementation ID baseline mismatch\n");
++		return 0;
++	}
++	if (cca_sample_policy.instance_id_size &&
++	    !buffer_matches_bytes(&platform->instance_id, cca_sample_policy.instance_id,
++				  cca_sample_policy.instance_id_size)) {
++		RTLS_ERR("CCA instance ID baseline mismatch\n");
++		return 0;
++	}
++
++	cca_sample_realm_measurements.valid = true;
++	cca_sample_platform_measurements.valid = true;
++	RTLS_INFO("CCA sample baseline verification passed\n");
++	return 1;
++}
++
++int cca_sample_parse_log_level(const char *text, rats_tls_log_level_t *level)
++{
++	if (!strcasecmp(text, "debug"))
++		*level = RATS_TLS_LOG_LEVEL_DEBUG;
++	else if (!strcasecmp(text, "info"))
++		*level = RATS_TLS_LOG_LEVEL_INFO;
++	else if (!strcasecmp(text, "warn"))
++		*level = RATS_TLS_LOG_LEVEL_WARN;
++	else if (!strcasecmp(text, "error"))
++		*level = RATS_TLS_LOG_LEVEL_ERROR;
++	else if (!strcasecmp(text, "fatal"))
++		*level = RATS_TLS_LOG_LEVEL_FATAL;
++	else if (!strcasecmp(text, "off"))
++		*level = RATS_TLS_LOG_LEVEL_NONE;
++	else
++		return -1;
++	return 0;
++}
++
++void cca_sample_print_policy_options(void)
++{
++	puts("        --realm-profile value      expected Realm profile\n"
++	     "        --platform-profile value   expected Platform profile\n"
++	     "        --rim hex                  expected Realm initial measurement\n"
++	     "        --implementation-id hex    expected 32-byte implementation ID\n"
++	     "        --instance-id hex          expected 33-byte instance ID");
++}
++
++static int transmit_all(rats_tls_handle handle, const uint8_t *data, size_t size)
++{
++	while (size) {
++		size_t chunk = size;
++		if (rats_tls_transmit(handle, (void *)data, &chunk) != RATS_TLS_ERR_NONE ||
++		    chunk == 0 || chunk > size)
++			return -1;
++		data += chunk;
++		size -= chunk;
++	}
++	return 0;
++}
++
++static int receive_all(rats_tls_handle handle, uint8_t *data, size_t size)
++{
++	while (size) {
++		size_t chunk = size;
++		if (rats_tls_receive(handle, data, &chunk) != RATS_TLS_ERR_NONE || chunk == 0 ||
++		    chunk > size)
++			return -1;
++		data += chunk;
++		size -= chunk;
++	}
++	return 0;
++}
++
++int cca_sample_send_frame(rats_tls_handle handle, const void *data, size_t size)
++{
++	if (!handle || (!data && size) || size > UINT32_MAX)
++		return -1;
++	uint32_t network_size = htonl((uint32_t)size);
++	return transmit_all(handle, (const uint8_t *)&network_size, sizeof(network_size)) ||
++		       transmit_all(handle, data, size) ?
++		       -1 :
++		       0;
++}
++
++int cca_sample_receive_frame(rats_tls_handle handle, void *data, size_t capacity, size_t *size)
++{
++	if (!handle || !data || !size)
++		return -1;
++	uint32_t network_size = 0;
++	if (receive_all(handle, (uint8_t *)&network_size, sizeof(network_size)))
++		return -1;
++	uint32_t payload_size = ntohl(network_size);
++	if (payload_size == 0 || payload_size > capacity)
++		return -1;
++	if (receive_all(handle, data, payload_size))
++		return -1;
++	*size = payload_size;
++	return 0;
++}
++
++int cca_sample_receive_alloc_frame(rats_tls_handle handle, void **data, size_t maximum,
++				   size_t *size)
++{
++	if (!handle || !data || !size || maximum == 0 || maximum > UINT32_MAX)
++		return -1;
++	uint32_t network_size = 0;
++	if (receive_all(handle, (uint8_t *)&network_size, sizeof(network_size)))
++		return -1;
++	uint32_t payload_size = ntohl(network_size);
++	if (payload_size == 0 || payload_size > maximum)
++		return -1;
++	void *buffer = malloc(payload_size);
++	if (!buffer)
++		return -1;
++	if (receive_all(handle, buffer, payload_size)) {
++		free(buffer);
++		return -1;
++	}
++	*data = buffer;
++	*size = payload_size;
++	return 0;
++}
+diff --git a/samples/cca-common/cca_sample.h b/samples/cca-common/cca_sample.h
+new file mode 100644
+index 0000000..aa168b9
+--- /dev/null
++++ b/samples/cca-common/cca_sample.h
+@@ -0,0 +1,66 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#ifndef _RATS_TLS_CCA_SAMPLE_H
++#define _RATS_TLS_CCA_SAMPLE_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <rats-tls/api.h>
++
++#define CCA_SAMPLE_REQUEST_BOOT_LOG "REQUEST_BOOT_LOG"
++#define CCA_SAMPLE_REQUEST_CCEL_TABLE "REQUEST_CCEL_TABLE"
++#define CCA_SAMPLE_REQUEST_EVENT_LOG "REQUEST_EVENT_LOG"
++#define CCA_SAMPLE_REQUEST_IMA_LOG "REQUEST_IMA_LOG"
++#define CCA_SAMPLE_ATTESTATION_PASS "ATTESTATION_PASS"
++#define CCA_SAMPLE_MAX_LOG_SIZE (1024U * 1024U * 1024U)
++#define CCA_SAMPLE_MAX_SW_COMPONENTS 128U
++#define CCA_SAMPLE_MAX_TEXT_FIELD 128U
++#define CCA_SAMPLE_MAX_COMPONENT_DIGEST 64U
++
++typedef struct {
++	const char *realm_profile;
++	const char *platform_profile;
++	uint8_t rim[64];
++	size_t rim_size;
++	uint8_t implementation_id[32];
++	size_t implementation_id_size;
++	uint8_t instance_id[33];
++	size_t instance_id_size;
++} cca_sample_policy_t;
++
++typedef struct {
++	uint8_t rem[RATS_TLS_CCA_REM_COUNT][64];
++	size_t rem_size[RATS_TLS_CCA_REM_COUNT];
++	bool valid;
++} cca_sample_realm_measurements_t;
++
++typedef struct {
++	char component_type[CCA_SAMPLE_MAX_TEXT_FIELD];
++	char version[CCA_SAMPLE_MAX_TEXT_FIELD];
++	char hash_algorithm[CCA_SAMPLE_MAX_TEXT_FIELD];
++	uint8_t measurement[CCA_SAMPLE_MAX_COMPONENT_DIGEST];
++	size_t measurement_size;
++	uint8_t signer_id[CCA_SAMPLE_MAX_COMPONENT_DIGEST];
++	size_t signer_id_size;
++} cca_sample_sw_component_t;
++
++typedef struct {
++	cca_sample_sw_component_t components[CCA_SAMPLE_MAX_SW_COMPONENTS];
++	size_t component_count;
++	bool valid;
++} cca_sample_platform_measurements_t;
++
++extern cca_sample_policy_t cca_sample_policy;
++extern cca_sample_realm_measurements_t cca_sample_realm_measurements;
++extern cca_sample_platform_measurements_t cca_sample_platform_measurements;
++
++int cca_sample_parse_hex(const char *text, uint8_t *output, size_t capacity, size_t *output_size);
++int cca_sample_verify_callback(void *args);
++int cca_sample_parse_log_level(const char *text, rats_tls_log_level_t *level);
++void cca_sample_print_policy_options(void);
++int cca_sample_send_frame(rats_tls_handle handle, const void *data, size_t size);
++int cca_sample_receive_frame(rats_tls_handle handle, void *data, size_t capacity, size_t *size);
++int cca_sample_receive_alloc_frame(rats_tls_handle handle, void **data, size_t maximum,
++				   size_t *size);
++
++#endif
+diff --git a/samples/cca-server/CMakeLists.txt b/samples/cca-server/CMakeLists.txt
+new file mode 100644
+index 0000000..ddb6083
+--- /dev/null
++++ b/samples/cca-server/CMakeLists.txt
+@@ -0,0 +1,11 @@
++project(cca-server)
++
++set(SOURCES server.c ../cca-common/cca_sample.c)
++add_executable(${PROJECT_NAME} ${SOURCES})
++target_include_directories(${PROJECT_NAME} PRIVATE
++                           ${CMAKE_CURRENT_SOURCE_DIR}/../cca-common
++                           ${CMAKE_CURRENT_SOURCE_DIR}/../../src/include)
++target_link_libraries(${PROJECT_NAME} ${RTLS_LIB})
++set_target_properties(${PROJECT_NAME} PROPERTIES INSTALL_RPATH ${RATS_TLS_INSTALL_LIB_PATH})
++
++install(TARGETS ${PROJECT_NAME} DESTINATION ${RATS_TLS_INSTALL_BIN_PATH})
+diff --git a/samples/cca-server/server.c b/samples/cca-server/server.c
+new file mode 100644
+index 0000000..8f4c620
+--- /dev/null
++++ b/samples/cca-server/server.c
+@@ -0,0 +1,324 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <arpa/inet.h>
++#include <errno.h>
++#include <getopt.h>
++#include <signal.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <unistd.h>
++#include <rats-tls/api.h>
++#include <rats-tls/log.h>
++#include "cca_sample.h"
++
++#define DEFAULT_IP	 "0.0.0.0"
++#define DEFAULT_PORT	 1234
++#define DEFAULT_IMA_LOG	 "/sys/kernel/security/ima/binary_runtime_measurements"
++#define DEFAULT_CCEL_TABLE "/sys/firmware/acpi/tables/CCEL"
++#define DEFAULT_BOOT_LOG "/sys/firmware/acpi/tables/data/CCEL"
++
++rats_tls_log_level_t global_log_level = RATS_TLS_LOG_LEVEL_DEFAULT;
++
++static void usage(const char *program)
++{
++	printf("Usage: %s [options]\n"
++	       "        --ip/-i value             listening IPv4 address (default 0.0.0.0)\n"
++	       "        --port/-p value           listening TCP port (default 1234)\n"
++	       "        --mutual/-m               verify client CCA evidence\n"
++	       "        --once/-1                 exit after one connection\n"
++	       "        --ima-log value           IMA binary log path\n"
++	       "        --ccel-table value        CCEL ACPI table path\n"
++	       "        --boot-log value          CCA event log path\n"
++	       "        --log-level/-l value      debug|info|warn|error|fatal|off\n",
++	       program);
++	cca_sample_print_policy_options();
++	puts("        --help/-h                 show this help");
++}
++
++static int configure_policy(int option, const char *value)
++{
++	switch (option) {
++	case 1000:
++		cca_sample_policy.realm_profile = value;
++		return 0;
++	case 1001:
++		cca_sample_policy.platform_profile = value;
++		return 0;
++	case 1002:
++		return cca_sample_parse_hex(value, cca_sample_policy.rim,
++					    sizeof(cca_sample_policy.rim),
++					    &cca_sample_policy.rim_size);
++	case 1003:
++		if (cca_sample_parse_hex(value, cca_sample_policy.implementation_id,
++					 sizeof(cca_sample_policy.implementation_id),
++					 &cca_sample_policy.implementation_id_size))
++			return -1;
++		return cca_sample_policy.implementation_id_size == 32 ? 0 : -1;
++	case 1004:
++		if (cca_sample_parse_hex(value, cca_sample_policy.instance_id,
++					 sizeof(cca_sample_policy.instance_id),
++					 &cca_sample_policy.instance_id_size))
++			return -1;
++		return cca_sample_policy.instance_id_size == 33 ? 0 : -1;
++	default:
++		return -1;
++	}
++}
++
++static int send_file(rats_tls_handle handle, const char *path)
++{
++	FILE *file = fopen(path, "rb");
++	if (!file) {
++		RTLS_ERR("failed to open %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++
++	size_t capacity = 64U * 1024U;
++	uint8_t *data = malloc(capacity);
++	if (!data) {
++		fclose(file);
++		return -1;
++	}
++
++	size_t length = 0;
++	for (;;) {
++		if (length == capacity) {
++			if (capacity >= CCA_SAMPLE_MAX_LOG_SIZE) {
++				RTLS_ERR("log file %s exceeds maximum %u\n", path,
++					 CCA_SAMPLE_MAX_LOG_SIZE);
++				free(data);
++				fclose(file);
++				return -1;
++			}
++			size_t next_capacity = capacity * 2U;
++			if (next_capacity > CCA_SAMPLE_MAX_LOG_SIZE)
++				next_capacity = CCA_SAMPLE_MAX_LOG_SIZE;
++			uint8_t *next = realloc(data, next_capacity);
++			if (!next) {
++				free(data);
++				fclose(file);
++				return -1;
++			}
++			data = next;
++			capacity = next_capacity;
++		}
++
++		size_t read_size = fread(data + length, 1, capacity - length, file);
++		length += read_size;
++		if (read_size == 0) {
++			if (ferror(file)) {
++				RTLS_ERR("failed to read %s: %s\n", path, strerror(errno));
++				free(data);
++				fclose(file);
++				return -1;
++			}
++			break;
++		}
++	}
++	fclose(file);
++
++	if (length == 0) {
++		RTLS_ERR("log file %s is empty\n", path);
++		free(data);
++		return -1;
++	}
++
++	RTLS_INFO("sending log file %s (%zu bytes)\n", path, length);
++	int result = cca_sample_send_frame(handle, data, length);
++	if (result)
++		RTLS_ERR("failed to send log file %s\n", path);
++	free(data);
++	return result;
++}
++
++static int serve_connection(int connection, bool mutual, rats_tls_log_level_t log_level,
++			    const char *ima_log, const char *ccel_table, const char *boot_log)
++{
++	rats_tls_conf_t config = {
++		.flags = RATS_TLS_CONF_FLAGS_SERVER,
++		.log_level = log_level,
++		.cert_algo = RATS_TLS_CERT_ALGO_DEFAULT,
++	};
++	snprintf(config.attester_type, sizeof(config.attester_type), "cca");
++	snprintf(config.verifier_type, sizeof(config.verifier_type), "cca");
++	snprintf(config.tls_type, sizeof(config.tls_type), "openssl");
++	snprintf(config.crypto_type, sizeof(config.crypto_type), "openssl");
++	if (mutual)
++		config.flags |= RATS_TLS_CONF_FLAGS_MUTUAL;
++
++	rats_tls_handle handle = NULL;
++	if (rats_tls_init(&config, &handle) != RATS_TLS_ERR_NONE)
++		goto error;
++	if (mutual && rats_tls_set_verification_callback(&handle, cca_sample_verify_callback) !=
++			      RATS_TLS_ERR_NONE)
++		goto error;
++	if (rats_tls_negotiate(handle, connection) != RATS_TLS_ERR_NONE)
++		goto error;
++
++	for (;;) {
++		uint8_t request[4096];
++		size_t request_size = 0;
++		if (cca_sample_receive_frame(handle, request, sizeof(request), &request_size)) {
++			RTLS_ERR("failed to receive a valid CCA sample frame\n");
++			goto error;
++		}
++		if (request_size == strlen(CCA_SAMPLE_REQUEST_IMA_LOG) &&
++		    !memcmp(request, CCA_SAMPLE_REQUEST_IMA_LOG, request_size)) {
++			RTLS_INFO("received IMA log request\n");
++			if (send_file(handle, ima_log))
++				goto error;
++			continue;
++		}
++		if (request_size == strlen(CCA_SAMPLE_REQUEST_BOOT_LOG) &&
++		    !memcmp(request, CCA_SAMPLE_REQUEST_BOOT_LOG, request_size)) {
++			RTLS_INFO("received boot log request\n");
++			if (send_file(handle, boot_log))
++				goto error;
++			continue;
++		}
++		if (request_size == strlen(CCA_SAMPLE_REQUEST_CCEL_TABLE) &&
++		    !memcmp(request, CCA_SAMPLE_REQUEST_CCEL_TABLE, request_size)) {
++			RTLS_INFO("received CCEL table request\n");
++			if (send_file(handle, ccel_table))
++				goto error;
++			continue;
++		}
++		if (request_size == strlen(CCA_SAMPLE_REQUEST_EVENT_LOG) &&
++		    !memcmp(request, CCA_SAMPLE_REQUEST_EVENT_LOG, request_size)) {
++			RTLS_INFO("received event log request\n");
++			if (send_file(handle, boot_log))
++				goto error;
++			continue;
++		}
++		if (request_size == strlen(CCA_SAMPLE_ATTESTATION_PASS) &&
++		    !memcmp(request, CCA_SAMPLE_ATTESTATION_PASS, request_size)) {
++			if (cca_sample_send_frame(handle, CCA_SAMPLE_ATTESTATION_PASS,
++						  strlen(CCA_SAMPLE_ATTESTATION_PASS)))
++				goto error;
++			break;
++		}
++		printf("CCA client: %.*s\n", (int)request_size, (const char *)request);
++		if (cca_sample_send_frame(handle, request, request_size))
++			goto error;
++	}
++
++	rats_tls_cleanup(handle);
++	return 0;
++error:
++	RTLS_ERR("CCA RA-TLS server connection failed\n");
++	if (handle)
++		rats_tls_cleanup(handle);
++	return -1;
++}
++
++int main(int argc, char **argv)
++{
++	const char *ip = DEFAULT_IP;
++	int port = DEFAULT_PORT;
++	bool mutual = false;
++	bool once = false;
++	const char *ima_log = DEFAULT_IMA_LOG;
++	const char *ccel_table = DEFAULT_CCEL_TABLE;
++	const char *boot_log = DEFAULT_BOOT_LOG;
++	rats_tls_log_level_t log_level = RATS_TLS_LOG_LEVEL_INFO;
++	static const struct option options[] = {
++		{ "ip", required_argument, NULL, 'i' },
++		{ "port", required_argument, NULL, 'p' },
++		{ "mutual", no_argument, NULL, 'm' },
++		{ "once", no_argument, NULL, '1' },
++		{ "log-level", required_argument, NULL, 'l' },
++		{ "ima-log", required_argument, NULL, 1005 },
++		{ "boot-log", required_argument, NULL, 1006 },
++		{ "ccel-table", required_argument, NULL, 1007 },
++		{ "realm-profile", required_argument, NULL, 1000 },
++		{ "platform-profile", required_argument, NULL, 1001 },
++		{ "rim", required_argument, NULL, 1002 },
++		{ "implementation-id", required_argument, NULL, 1003 },
++		{ "instance-id", required_argument, NULL, 1004 },
++		{ "help", no_argument, NULL, 'h' },
++		{ 0, 0, 0, 0 },
++	};
++
++	int option;
++	while ((option = getopt_long(argc, argv, "i:p:m1l:h", options, NULL)) != -1) {
++		switch (option) {
++		case 'i':
++			ip = optarg;
++			break;
++		case 'p':
++			port = atoi(optarg);
++			break;
++		case 'm':
++			mutual = true;
++			break;
++		case '1':
++			once = true;
++			break;
++		case 'l':
++			if (cca_sample_parse_log_level(optarg, &log_level))
++				goto invalid;
++			break;
++		case 'h':
++			usage(argv[0]);
++			return 0;
++		default:
++			if (option == 1005) {
++				ima_log = optarg;
++				break;
++			}
++			if (option == 1006) {
++				boot_log = optarg;
++				break;
++			}
++			if (option == 1007) {
++				ccel_table = optarg;
++				break;
++			}
++			if (configure_policy(option, optarg))
++				goto invalid;
++			break;
++		}
++	}
++	if (port <= 0 || port > 65535)
++		goto invalid;
++	global_log_level = log_level;
++	signal(SIGPIPE, SIG_IGN);
++
++	int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
++	if (listen_fd < 0) {
++		RTLS_ERR("socket failed: %s\n", strerror(errno));
++		return 1;
++	}
++	int reuse = 1;
++	setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
++	struct sockaddr_in address = {
++		.sin_family = AF_INET,
++		.sin_port = htons((uint16_t)port),
++	};
++	if (inet_pton(AF_INET, ip, &address.sin_addr) != 1 ||
++	    bind(listen_fd, (struct sockaddr *)&address, sizeof(address)) || listen(listen_fd, 8)) {
++		RTLS_ERR("failed to listen on %s:%d: %s\n", ip, port, strerror(errno));
++		close(listen_fd);
++		return 1;
++	}
++
++	RTLS_INFO("CCA RA-TLS server listening on %s:%d\n", ip, port);
++	do {
++		int connection = accept(listen_fd, NULL, NULL);
++		if (connection < 0) {
++			if (errno == EINTR)
++				continue;
++			RTLS_ERR("accept failed: %s\n", strerror(errno));
++			break;
++		}
++		serve_connection(connection, mutual, log_level, ima_log, ccel_table, boot_log);
++		close(connection);
++	} while (!once);
++
++	close(listen_fd);
++	return 0;
++invalid:
++	usage(argv[0]);
++	return 1;
++}
+diff --git a/scripts/cca_collect_baselines.py b/scripts/cca_collect_baselines.py
+new file mode 100755
+index 0000000..ebd4f5c
+--- /dev/null
++++ b/scripts/cca_collect_baselines.py
+@@ -0,0 +1,222 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: Apache-2.0
++import argparse
++import json
++import os
++import re
++import struct
++import subprocess
++import sys
++from pathlib import Path
++
++TPM_ALG_SHA1 = 0x0004
++TPM_ALG_SHA256 = 0x000B
++TPM_ALG_SHA384 = 0x000C
++TPM_ALG_SHA512 = 0x000D
++EV_NO_ACTION = 0x00000003
++
++
++def digest_size(algorithm):
++    return {
++        TPM_ALG_SHA1: 20,
++        TPM_ALG_SHA256: 32,
++        TPM_ALG_SHA384: 48,
++        TPM_ALG_SHA512: 64,
++    }.get(algorithm, 0)
++
++
++def clean_value(value):
++    value = value.strip()
++    return "-" if not value or value == "<not present>" else value
++
++
++def parse_platform_baseline(text):
++    components = []
++    current = None
++    field_pattern = re.compile(r"^\s*(type|measurement|version|signer ID|hash algorithm):\s*(.*)$")
++
++    for line in text.splitlines():
++        if line.startswith("CCA software component["):
++            if current:
++                components.append(current)
++            current = {
++                "type": "-",
++                "measurement": "-",
++                "version": "-",
++                "signer ID": "-",
++                "hash algorithm": "-",
++            }
++            continue
++        if not current:
++            continue
++        match = field_pattern.match(line)
++        if match:
++            current[match.group(1)] = clean_value(match.group(2))
++
++    if current:
++        components.append(current)
++
++    baseline = {"measure_value": []}
++    for component in components:
++        entry = {
++            "firware_name": component["type"],
++            "measurement": component["measurement"],
++            "firware_version": component["version"],
++            "hash_algorithm": component["hash algorithm"],
++        }
++        if component["signer ID"] != "-":
++            entry["signer_id"] = component["signer ID"]
++        baseline["measure_value"].append(entry)
++    return json.dumps(baseline, indent=2), len(components)
++
++
++def require(cursor, size, what):
++    if cursor["offset"] + size > len(cursor["data"]):
++        raise ValueError(f"truncated boot log while reading {what} at offset {cursor['offset']}")
++    start = cursor["offset"]
++    cursor["offset"] += size
++    return cursor["data"][start : start + size]
++
++
++def get_u16(cursor, what):
++    return struct.unpack("<H", require(cursor, 2, what))[0]
++
++
++def get_u32(cursor, what):
++    return struct.unpack("<I", require(cursor, 4, what))[0]
++
++
++def parse_firmware_baseline(path):
++    data = Path(path).read_bytes()
++    cursor = {"data": data, "offset": 0}
++    entries = []
++    entry_count = 0
++
++    while cursor["offset"] < len(data):
++        registry = get_u32(cursor, "registry")
++        event_type = get_u32(cursor, "event type")
++
++        if (registry == 0xFFFFFFFF and event_type == 0xFFFFFFFF) or (
++            registry == 0 and event_type == 0
++        ):
++            break
++
++        if entry_count == 0 and event_type == EV_NO_ACTION:
++            require(cursor, 20, "legacy digest")
++            event_size = get_u32(cursor, "spec event size")
++            spec = require(cursor, event_size, "spec event")
++            if len(spec) < 29 or not spec.startswith(b"Spec ID Event03"):
++                raise ValueError("first boot log entry is not Spec ID Event03")
++            entry_count += 1
++            continue
++
++        digest_count = get_u32(cursor, "digest count")
++        sha256_digest = None
++        for _ in range(digest_count):
++            algorithm = get_u16(cursor, "digest algorithm")
++            size = digest_size(algorithm)
++            if not size:
++                raise ValueError(f"unsupported digest algorithm 0x{algorithm:04x}")
++            digest = require(cursor, size, "digest")
++            if algorithm == TPM_ALG_SHA256:
++                sha256_digest = digest
++
++        event_size = get_u32(cursor, "event size")
++        event = require(cursor, event_size, "event")
++        desc = ""
++        try:
++            decoded = event.decode("utf-8", errors="ignore").strip("\x00\r\n\t ")
++            if decoded and all(ch.isprintable() or ch.isspace() for ch in decoded):
++                desc = decoded.splitlines()[0][:120]
++        except UnicodeDecodeError:
++            desc = ""
++
++        if sha256_digest:
++            if desc:
++                entries.append(f"{registry} {sha256_digest.hex()} {desc}")
++            else:
++                entries.append(f"{registry} {sha256_digest.hex()}")
++        entry_count += 1
++
++    lines = ["# <registry> <sha256-hex> [event-desc-substring]"]
++    lines.extend(entries)
++    return lines, len(entries)
++
++
++def run_client(args):
++    command = [
++        args.client,
++        "--ip",
++        args.ip,
++        "--port",
++        str(args.port),
++        "--message",
++        args.message,
++        "--bootlog",
++        "--dump-bootlog",
++        "--log-level",
++        args.log_level,
++    ]
++    if args.mutual:
++        command.append("--mutual")
++    print("running:", " ".join(command), file=sys.stderr)
++    completed = subprocess.run(command, text=True, capture_output=True, cwd=args.workdir)
++    sys.stderr.write(completed.stdout)
++    sys.stderr.write(completed.stderr)
++    if completed.returncode != 0:
++        raise RuntimeError(f"cca-client failed with exit code {completed.returncode}")
++    return completed.stdout + completed.stderr
++
++
++def main():
++    parser = argparse.ArgumentParser(
++        description="Collect CCA sample platform and firmware baseline files."
++    )
++    parser.add_argument("--client", default="/usr/share/rats-tls/samples/cca-client")
++    parser.add_argument("--ip", default="127.0.0.1")
++    parser.add_argument("--port", type=int, default=1234)
++    parser.add_argument("--message", default="baseline probe")
++    parser.add_argument("--log-level", default="info")
++    parser.add_argument("--mutual", action="store_true")
++    parser.add_argument("--workdir", default=".")
++    parser.add_argument("--platform-out", default="platform-baseline.json")
++    parser.add_argument("--firmware-out", default="firmware-baseline.txt")
++    parser.add_argument("--boot-log", default="boot_log.bin")
++    parser.add_argument(
++        "--from-output",
++        help="Parse platform baseline from an existing cca-client output file instead of running the client.",
++    )
++    parser.add_argument(
++        "--skip-client",
++        action="store_true",
++        help="Do not run cca-client; parse --boot-log and optionally --from-output only.",
++    )
++    args = parser.parse_args()
++
++    output_text = ""
++    if args.from_output:
++        output_text = Path(args.from_output).read_text(errors="replace")
++    elif not args.skip_client:
++        output_text = run_client(args)
++
++    if output_text:
++        content, count = parse_platform_baseline(output_text)
++        Path(args.platform_out).write_text(content + "\n")
++        print(f"wrote {args.platform_out} ({count} platform components)")
++    else:
++        print("skipped platform baseline generation")
++
++    if os.path.exists(args.boot_log):
++        lines, count = parse_firmware_baseline(args.boot_log)
++        Path(args.firmware_out).write_text("\n".join(lines) + "\n")
++        print(f"wrote {args.firmware_out} ({count} firmware events)")
++    else:
++        print(f"skipped firmware baseline generation: {args.boot_log} not found")
++
++
++if __name__ == "__main__":
++    try:
++        main()
++    except Exception as error:
++        print(f"error: {error}", file=sys.stderr)
++        sys.exit(1)
+diff --git a/src/attesters/cca/cca_attester.h b/src/attesters/cca/cca_attester.h
+index d766180..cee6289 100644
+--- a/src/attesters/cca/cca_attester.h
++++ b/src/attesters/cca/cca_attester.h
+@@ -10,4 +10,8 @@
+ #define CCA_EVIDENCE_CAPACITY 8192U
+ #define CCA_CHALLENGE_SIZE 32U
+ 
++typedef struct {
++	uint8_t reserved;
++} cca_attester_private_t;
++
+ #endif
+diff --git a/src/attesters/cca/cleanup.c b/src/attesters/cca/cleanup.c
+index ffa3ce5..f40e0b6 100644
+--- a/src/attesters/cca/cleanup.c
++++ b/src/attesters/cca/cleanup.c
+@@ -1,7 +1,12 @@
+ /* SPDX-License-Identifier: Apache-2.0 */
++#include <stdlib.h>
+ #include <rats-tls/attester.h>
+ 
+-enclave_attester_err_t cca_attester_cleanup(__attribute__((unused)) enclave_attester_ctx_t *ctx)
++enclave_attester_err_t cca_attester_cleanup(enclave_attester_ctx_t *ctx)
+ {
++	if (ctx) {
++		free(ctx->attester_private);
++		ctx->attester_private = NULL;
++	}
+ 	return ENCLAVE_ATTESTER_ERR_NONE;
+ }
+diff --git a/src/attesters/cca/collect_evidence.c b/src/attesters/cca/collect_evidence.c
+index dfce041..face72c 100644
+--- a/src/attesters/cca/collect_evidence.c
++++ b/src/attesters/cca/collect_evidence.c
+@@ -99,22 +99,19 @@ enclave_attester_err_t cca_collect_evidence(
+ 		goto out;
+ 	}
+ 
+-	const size_t header_size = sizeof(uint64_t) * 2;
+-	if (token_len > UINT64_MAX || cert_len > UINT64_MAX ||
+-	    header_size + token_len + cert_len > sizeof(evidence->cca.report)) {
++	const size_t header_size = sizeof(size_t) * 2;
++	if (header_size + token_len + cert_len > sizeof(evidence->cca.report)) {
+ 		RTLS_ERR("CCA evidence exceeds %zu-byte capacity\n", sizeof(evidence->cca.report));
+ 		goto out;
+ 	}
+ 
+-	uint64_t token_len_u64 = (uint64_t)token_len;
+-	uint64_t cert_len_u64 = (uint64_t)cert_len;
+ 	uint8_t *cursor = evidence->cca.report;
+-	memcpy(cursor, &token_len_u64, sizeof(token_len_u64));
+-	cursor += sizeof(token_len_u64);
++	memcpy(cursor, &token_len, sizeof(token_len));
++	cursor += sizeof(token_len);
+ 	memcpy(cursor, token, token_len);
+ 	cursor += token_len;
+-	memcpy(cursor, &cert_len_u64, sizeof(cert_len_u64));
+-	cursor += sizeof(cert_len_u64);
++	memcpy(cursor, &cert_len, sizeof(cert_len));
++	cursor += sizeof(cert_len);
+ 	memcpy(cursor, cert, cert_len);
+ 
+ 	evidence->cca.report_len = (uint32_t)(header_size + token_len + cert_len);
+diff --git a/src/attesters/cca/init.c b/src/attesters/cca/init.c
+index 84333f8..883ff58 100644
+--- a/src/attesters/cca/init.c
++++ b/src/attesters/cca/init.c
+@@ -1,11 +1,14 @@
+ /* SPDX-License-Identifier: Apache-2.0 */
++#include <stdlib.h>
+ #include <rats-tls/attester.h>
++#include "cca_attester.h"
+ 
+ enclave_attester_err_t cca_attester_init(enclave_attester_ctx_t *ctx,
+ 					 __attribute__((unused)) rats_tls_cert_algo_t algo)
+ {
+ 	if (!ctx)
+ 		return -ENCLAVE_ATTESTER_ERR_INVALID;
+-	ctx->attester_private = NULL;
+-	return ENCLAVE_ATTESTER_ERR_NONE;
++	ctx->attester_private = calloc(1, sizeof(cca_attester_private_t));
++	return ctx->attester_private ? ENCLAVE_ATTESTER_ERR_NONE :
++				       -ENCLAVE_ATTESTER_ERR_NO_MEM;
+ }
+diff --git a/src/attesters/internal/rtls_enclave_attester_select.c b/src/attesters/internal/rtls_enclave_attester_select.c
+index c08790b..30a76d7 100644
+--- a/src/attesters/internal/rtls_enclave_attester_select.c
++++ b/src/attesters/internal/rtls_enclave_attester_select.c
+@@ -37,7 +37,7 @@ rats_tls_err_t rtls_attester_select(rtls_core_context_t *ctx, const char *name,
+ 		ctx->flags |= RATS_TLS_CONF_FLAGS_ATTESTER_ENFORCED;
+ 
+ 	enclave_attester_ctx_t *attester_ctx = NULL;
+-	for (unsigned int i = 0; i < registerd_enclave_attester_nums; ++i) {
++	for (unsigned int i = 0; i < enclave_attester_nums; ++i) {
+ 		if (name && strcmp(name, enclave_attesters_ctx[i]->opts->name))
+ 			continue;
+ 
+diff --git a/src/core/cpu.c b/src/core/cpu.c
+index ad48924..c2aafbd 100644
+--- a/src/core/cpu.c
++++ b/src/core/cpu.c
+@@ -30,12 +30,20 @@ static inline void cpuid(int *eax, int *ebx, int *ecx, int *edx)
+ 		     : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
+ 		     : "0"(*eax), "1"(*ebx), "2"(*ecx), "3"(*edx)
+ 		     : "memory");
+-#else
++#elif defined(__i386__)
+ 	/* on 32bit, ebx can NOT be used as PIC code */
+ 	asm volatile("xchgl %%ebx, %1; cpuid; xchgl %%ebx, %1"
+ 		     : "=a"(*eax), "=r"(*ebx), "=c"(*ecx), "=d"(*edx)
+ 		     : "0"(*eax), "1"(*ebx), "2"(*ecx), "3"(*edx)
+ 		     : "memory");
++#else
++	/* CPUID is an x86 instruction. Non-x86 platforms do not support
++	 * SGX, TDX, SEV or CSV capability probing through this interface.
++	 */
++	*eax = 0;
++	*ebx = 0;
++	*ecx = 0;
++	*edx = 0;
+ #endif
+ }
+ // clang-format on
+diff --git a/src/crypto_wrappers/internal/rtls_crypto_wrapper_select.c b/src/crypto_wrappers/internal/rtls_crypto_wrapper_select.c
+index fa86d80..4793227 100644
+--- a/src/crypto_wrappers/internal/rtls_crypto_wrapper_select.c
++++ b/src/crypto_wrappers/internal/rtls_crypto_wrapper_select.c
+@@ -27,7 +27,7 @@ rats_tls_err_t rtls_crypto_wrapper_select(rtls_core_context_t *ctx, const char *
+ 	RTLS_DEBUG("selecting the crypto wrapper '%s' ...\n", name);
+ 
+ 	crypto_wrapper_ctx_t *crypto_ctx = NULL;
+-	for (unsigned int i = 0; i < registerd_crypto_wrapper_nums; ++i) {
++	for (unsigned int i = 0; i < crypto_wrappers_nums; ++i) {
+ 		if (name && strcmp(name, crypto_wrappers_ctx[i]->opts->name))
+ 			continue;
+ 
+diff --git a/src/include/rats-tls/cca.h b/src/include/rats-tls/cca.h
+index e76ed01..4b60cb6 100644
+--- a/src/include/rats-tls/cca.h
++++ b/src/include/rats-tls/cca.h
+@@ -7,6 +7,7 @@
+ 
+ #define RATS_TLS_CCA_REM_COUNT 4
+ #define RATS_TLS_CCA_CHALLENGE_SIZE 32
++#define RATS_TLS_CCA_REALM_CHALLENGE_SIZE 64
+ 
+ typedef struct {
+ 	const uint8_t *data;
+diff --git a/src/tls_wrappers/internal/rtls_tls_wrapper_select.c b/src/tls_wrappers/internal/rtls_tls_wrapper_select.c
+index 6476801..f8556ae 100644
+--- a/src/tls_wrappers/internal/rtls_tls_wrapper_select.c
++++ b/src/tls_wrappers/internal/rtls_tls_wrapper_select.c
+@@ -28,7 +28,7 @@ rats_tls_err_t rtls_tls_wrapper_select(rtls_core_context_t *ctx, const char *nam
+ 	RTLS_DEBUG("selecting the tls wrapper '%s' ...\n", name);
+ 
+ 	tls_wrapper_ctx_t *tls_ctx = NULL;
+-	for (unsigned int i = 0; i < registerd_tls_wrapper_nums; ++i) {
++	for (unsigned int i = 0; i < tls_wrappers_nums; ++i) {
+ 		if (name && strcmp(name, tls_wrappers_ctx[i]->opts->name))
+ 			continue;
+ 
+diff --git a/src/tls_wrappers/openssl/use_cert.c b/src/tls_wrappers/openssl/use_cert.c
+index 768295d..1d7afe0 100644
+--- a/src/tls_wrappers/openssl/use_cert.c
++++ b/src/tls_wrappers/openssl/use_cert.c
+@@ -16,12 +16,29 @@ tls_wrapper_err_t openssl_tls_use_cert(tls_wrapper_ctx_t *ctx, rats_tls_cert_inf
+ 		return -TLS_WRAPPER_ERR_INVALID;
+ 
+ 	openssl_ctx_t *ssl_ctx = (openssl_ctx_t *)ctx->tls_private;
+-	int ret = SSL_CTX_use_certificate_ASN1(ssl_ctx->sctx, cert_info->cert_len,
+-					       cert_info->cert_buf);
++	int ret;
++#ifdef CCA
++	if (!ssl_ctx->ssl)
++		return -TLS_WRAPPER_ERR_INVALID;
++	ret = SSL_use_certificate_ASN1(ssl_ctx->ssl, cert_info->cert_buf,
++				       cert_info->cert_len);
++#else
++	ret = SSL_CTX_use_certificate_ASN1(ssl_ctx->sctx, cert_info->cert_len,
++					   cert_info->cert_buf);
++#endif
+ 	if (ret != SSL_SUCCESS) {
+ 		RTLS_ERR("failed to use certificate %d\n", ret);
++		print_openssl_err_all();
+ 		return OPENSSL_ERR_CODE(ret);
+ 	}
+ 
++#ifdef CCA
++	if (SSL_check_private_key(ssl_ctx->ssl) != SSL_SUCCESS) {
++		RTLS_ERR("CCA certificate does not match the generated TLS private key\n");
++		print_openssl_err_all();
++		return -TLS_WRAPPER_ERR_PRIV_KEY;
++	}
++#endif
++
+ 	return TLS_WRAPPER_ERR_NONE;
+ }
+diff --git a/src/tls_wrappers/openssl/use_privkey.c b/src/tls_wrappers/openssl/use_privkey.c
+index 447f253..684c350 100644
+--- a/src/tls_wrappers/openssl/use_privkey.c
++++ b/src/tls_wrappers/openssl/use_privkey.c
+@@ -28,7 +28,15 @@ tls_wrapper_err_t openssl_tls_use_privkey(tls_wrapper_ctx_t *ctx, rats_tls_cert_
+ 		return -CRYPTO_WRAPPER_ERR_UNSUPPORTED_ALGO;
+ 	}
+ 
+-	int ret = SSL_CTX_use_PrivateKey_ASN1(EPKEY, ssl_ctx->sctx, privkey_buf, (long)privkey_len);
++	int ret;
++#ifdef CCA
++	if (!ssl_ctx->ssl)
++		return -TLS_WRAPPER_ERR_INVALID;
++	ret = SSL_use_PrivateKey_ASN1(EPKEY, ssl_ctx->ssl, privkey_buf, (long)privkey_len);
++#else
++	ret = SSL_CTX_use_PrivateKey_ASN1(EPKEY, ssl_ctx->sctx, privkey_buf,
++					  (long)privkey_len);
++#endif
+ 
+ 	if (ret != SSL_SUCCESS) {
+ 		RTLS_ERR("failed to use private key.\n");
+diff --git a/src/verifiers/cca/cca_verifier.h b/src/verifiers/cca/cca_verifier.h
+index eb49305..1e1b4fa 100644
+--- a/src/verifiers/cca/cca_verifier.h
++++ b/src/verifiers/cca/cca_verifier.h
+@@ -4,7 +4,15 @@
+ 
+ #include <rats-tls/cca.h>
+ 
++#define CCA_COMPAT_RAW_TOKEN_SIZE 4096U
++
++typedef struct {
++	uint8_t buf[CCA_COMPAT_RAW_TOKEN_SIZE];
++	size_t buf_size;
++} cca_token_buf_t;
++
+ typedef struct {
++	cca_token_buf_t raw_token;
+ 	rtls_cca_evidence_t public_view;
+ } cca_verifier_private_t;
+ 
+diff --git a/src/verifiers/cca/verify_evidence.c b/src/verifiers/cca/verify_evidence.c
+index 1a73f2f..efd2e6b 100644
+--- a/src/verifiers/cca/verify_evidence.c
++++ b/src/verifiers/cca/verify_evidence.c
+@@ -59,6 +59,8 @@ void cca_verifier_reset(cca_verifier_private_t *private)
+ 	if (!private)
+ 		return;
+ 
++	memset(&private->raw_token, 0, sizeof(private->raw_token));
++
+ 	rtls_cca_platform_claims_t *p = &private->public_view.platform;
+ 	free_buffer(&p->profile);
+ 	free_buffer(&p->challenge);
+@@ -94,8 +96,13 @@ void cca_verifier_reset(cca_verifier_private_t *private)
+ 
+ static int copy_buffer(rtls_cca_buffer_t *destination, UsefulBufC source)
+ {
+-	if (!source.ptr || source.len == 0)
++	if (!source.ptr && source.len)
+ 		return -1;
++	if (source.len == 0) {
++		destination->data = NULL;
++		destination->size = 0;
++		return 0;
++	}
+ 	uint8_t *copy = malloc(source.len);
+ 	if (!copy)
+ 		return -1;
+@@ -111,6 +118,17 @@ static bool buffer_equals(const rtls_cca_buffer_t *buffer, const char *text)
+ 	return buffer->size == len && !memcmp(buffer->data, text, len);
+ }
+ 
++static const EVP_MD *hash_md_for_name(const rtls_cca_buffer_t *algorithm)
++{
++	if (buffer_equals(algorithm, "sha-256"))
++		return EVP_sha256();
++	if (buffer_equals(algorithm, "sha-384"))
++		return EVP_sha384();
++	if (buffer_equals(algorithm, "sha-512"))
++		return EVP_sha512();
++	return NULL;
++}
++
+ static size_t hash_size_for_name(const rtls_cca_buffer_t *algorithm)
+ {
+ 	if (buffer_equals(algorithm, "sha-256"))
+@@ -122,15 +140,9 @@ static size_t hash_size_for_name(const rtls_cca_buffer_t *algorithm)
+ 	return 0;
+ }
+ 
+-static const EVP_MD *hash_md_for_name(const rtls_cca_buffer_t *algorithm)
++static bool valid_measurement_size(size_t size)
+ {
+-	if (buffer_equals(algorithm, "sha-256"))
+-		return EVP_sha256();
+-	if (buffer_equals(algorithm, "sha-384"))
+-		return EVP_sha384();
+-	if (buffer_equals(algorithm, "sha-512"))
+-		return EVP_sha512();
+-	return NULL;
++	return size == 32 || size == 48 || size == 64;
+ }
+ 
+ static int decode_collection(const uint8_t *token, size_t token_len, UsefulBufC *platform,
+@@ -243,58 +255,72 @@ static int decode_realm_claims(UsefulBufC payload, cca_verifier_private_t *priva
+ {
+ 	QCBORDecodeContext decode;
+ 	QCBORItem map;
+-	UsefulBufC challenge, profile, rpv, rim, hash_alg, rak, rak_hash_alg;
++	QCBORItem items[9];
++	memset(items, 0, sizeof(items));
++	const int64_t labels[] = {
++		CCA_CLAIM_CHALLENGE, CCA_CLAIM_PROFILE, CCA_REALM_RPV, CCA_REALM_RIM,
++		CCA_REALM_HASH_ALG, CCA_REALM_RAK, CCA_REALM_REM, CCA_REALM_RAK_HASH_ALG,
++	};
++	const uint8_t types[] = {
++		QCBOR_TYPE_BYTE_STRING, QCBOR_TYPE_TEXT_STRING, QCBOR_TYPE_BYTE_STRING,
++		QCBOR_TYPE_BYTE_STRING, QCBOR_TYPE_TEXT_STRING, QCBOR_TYPE_BYTE_STRING,
++		QCBOR_TYPE_ARRAY, QCBOR_TYPE_TEXT_STRING,
++	};
++	for (size_t i = 0; i < 8; ++i) {
++		items[i].uDataType = types[i];
++		items[i].uLabelType = QCBOR_TYPE_INT64;
++		items[i].label.int64 = labels[i];
++	}
++	items[8].uLabelType = QCBOR_TYPE_NONE;
++
+ 	QCBORDecode_Init(&decode, payload, QCBOR_DECODE_MODE_NORMAL);
+ 	QCBORDecode_EnterMap(&decode, &map);
+-	QCBORDecode_GetByteStringInMapN(&decode, CCA_CLAIM_CHALLENGE, &challenge);
+-	QCBORDecode_GetTextStringInMapN(&decode, CCA_CLAIM_PROFILE, &profile);
+-	QCBORDecode_GetByteStringInMapN(&decode, CCA_REALM_RPV, &rpv);
+-	QCBORDecode_GetByteStringInMapN(&decode, CCA_REALM_RIM, &rim);
+-	QCBORDecode_GetTextStringInMapN(&decode, CCA_REALM_HASH_ALG, &hash_alg);
+-	QCBORDecode_GetByteStringInMapN(&decode, CCA_REALM_RAK, &rak);
+-	QCBORDecode_GetTextStringInMapN(&decode, CCA_REALM_RAK_HASH_ALG, &rak_hash_alg);
+-	QCBORItem rem_item;
+-	QCBORDecode_GetItemInMapN(&decode, CCA_REALM_REM, QCBOR_TYPE_ARRAY, &rem_item);
++	QCBORDecode_GetItemsInMap(&decode, items);
+ 	if (QCBORDecode_GetError(&decode) != QCBOR_SUCCESS ||
+-	    rem_item.val.uCount != RATS_TLS_CCA_REM_COUNT)
++	    items[0].uDataType == QCBOR_TYPE_NONE ||
++	    items[0].val.string.len != RATS_TLS_CCA_REALM_CHALLENGE_SIZE ||
++	    items[1].uDataType == QCBOR_TYPE_NONE || items[1].val.string.len == 0 ||
++	    (items[2].uDataType != QCBOR_TYPE_NONE &&
++	     items[2].val.string.len != CCA_RPV_SIZE) ||
++	    items[5].uDataType == QCBOR_TYPE_NONE ||
++	    (items[6].uDataType != QCBOR_TYPE_NONE &&
++	     items[6].val.uCount != RATS_TLS_CCA_REM_COUNT) ||
++	    items[7].uDataType == QCBOR_TYPE_NONE)
+ 		return -1;
+ 
+ 	rtls_cca_realm_claims_t *view = &private->public_view.realm;
+-	if (challenge.len != RATS_TLS_CCA_CHALLENGE_SIZE || profile.len == 0 ||
+-	    rpv.len != CCA_RPV_SIZE || copy_buffer(&view->challenge, challenge) ||
+-	    copy_buffer(&view->profile, profile) ||
+-	    copy_buffer(&view->personalization_value, rpv) ||
+-	    copy_buffer(&view->initial_measurement, rim) ||
+-	    copy_buffer(&view->hash_algorithm, hash_alg) ||
+-	    copy_buffer(&view->realm_attestation_key, rak) ||
+-	    copy_buffer(&view->realm_attestation_key_hash_algorithm, rak_hash_alg))
++	if (copy_buffer(&view->challenge, items[0].val.string) ||
++	    copy_buffer(&view->profile, items[1].val.string) ||
++	    (items[2].uDataType != QCBOR_TYPE_NONE &&
++	     copy_buffer(&view->personalization_value, items[2].val.string)) ||
++	    (items[3].uDataType != QCBOR_TYPE_NONE &&
++	     copy_buffer(&view->initial_measurement, items[3].val.string)) ||
++	    (items[4].uDataType != QCBOR_TYPE_NONE &&
++	     copy_buffer(&view->hash_algorithm, items[4].val.string)) ||
++	    copy_buffer(&view->realm_attestation_key, items[5].val.string) ||
++	    copy_buffer(&view->realm_attestation_key_hash_algorithm, items[7].val.string))
+ 		return -1;
+ 
+-	QCBORDecode_EnterArrayFromMapN(&decode, CCA_REALM_REM);
+-	for (size_t i = 0; i < RATS_TLS_CCA_REM_COUNT; ++i) {
+-		UsefulBufC rem;
+-		QCBORDecode_GetByteString(&decode, &rem);
+-		if (copy_buffer(&view->extensible_measurements[i], rem))
+-			return -1;
++	if (items[6].uDataType != QCBOR_TYPE_NONE) {
++		QCBORDecode_EnterArrayFromMapN(&decode, CCA_REALM_REM);
++		for (size_t i = 0; i < RATS_TLS_CCA_REM_COUNT; ++i) {
++			UsefulBufC rem;
++			QCBORDecode_GetByteString(&decode, &rem);
++			if (copy_buffer(&view->extensible_measurements[i], rem))
++				return -1;
++		}
++		QCBORDecode_ExitArray(&decode);
+ 	}
+-	QCBORDecode_ExitArray(&decode);
+ 	QCBORDecode_ExitMap(&decode);
+ 	if (QCBORDecode_Finish(&decode) != QCBOR_SUCCESS)
+ 		return -1;
+ 
+-	size_t measurement_size = hash_size_for_name(&view->hash_algorithm);
+-	if (!measurement_size || view->initial_measurement.size != measurement_size)
+-		return -1;
+-	for (size_t i = 0; i < RATS_TLS_CCA_REM_COUNT; ++i)
+-		if (view->extensible_measurements[i].size != measurement_size)
+-			return -1;
+-
+ 	QCBORDecodeContext key_decode;
+ 	QCBORItem key_map;
+ 	int64_t key_type = 0;
+ 	int64_t curve = 0;
+ 	UsefulBufC x, y;
+-	QCBORDecode_Init(&key_decode, rak, QCBOR_DECODE_MODE_NORMAL);
++	QCBORDecode_Init(&key_decode, items[5].val.string, QCBOR_DECODE_MODE_NORMAL);
+ 	QCBORDecode_EnterMap(&key_decode, &key_map);
+ 	QCBORDecode_GetInt64InMapN(&key_decode, 1, &key_type);
+ 	QCBORDecode_GetInt64InMapN(&key_decode, -1, &curve);
+@@ -337,39 +363,106 @@ static int decode_platform_claims(UsefulBufC payload, cca_verifier_private_t *pr
+ {
+ 	QCBORDecodeContext decode;
+ 	QCBORItem map;
+-	UsefulBufC profile, challenge, impl_id, inst_id, config, verification_service, hash_alg;
+-	uint64_t lifecycle = 0;
++	QCBORItem items[10];
++	memset(items, 0, sizeof(items));
++	const int64_t labels[] = {
++		CCA_CLAIM_PROFILE, CCA_CLAIM_CHALLENGE, CCA_PLATFORM_IMPLEMENTATION_ID,
++		CCA_PLATFORM_INSTANCE_ID, CCA_PLATFORM_CONFIG, CCA_PLATFORM_LIFECYCLE,
++		CCA_PLATFORM_SW_COMPONENTS, CCA_PLATFORM_VERIFICATION_SERVICE,
++		CCA_PLATFORM_HASH_ALG,
++	};
++	const uint8_t types[] = {
++		QCBOR_TYPE_TEXT_STRING, QCBOR_TYPE_BYTE_STRING, QCBOR_TYPE_BYTE_STRING,
++		QCBOR_TYPE_BYTE_STRING, QCBOR_TYPE_BYTE_STRING, QCBOR_TYPE_ANY,
++		QCBOR_TYPE_ARRAY, QCBOR_TYPE_TEXT_STRING, QCBOR_TYPE_TEXT_STRING,
++	};
++	for (size_t i = 0; i < 9; ++i) {
++		items[i].uDataType = types[i];
++		items[i].uLabelType = QCBOR_TYPE_INT64;
++		items[i].label.int64 = labels[i];
++	}
++	items[9].uLabelType = QCBOR_TYPE_NONE;
++
+ 	QCBORDecode_Init(&decode, payload, QCBOR_DECODE_MODE_NORMAL);
+ 	QCBORDecode_EnterMap(&decode, &map);
+-	QCBORDecode_GetTextStringInMapN(&decode, CCA_CLAIM_PROFILE, &profile);
+-	QCBORDecode_GetByteStringInMapN(&decode, CCA_CLAIM_CHALLENGE, &challenge);
+-	QCBORDecode_GetByteStringInMapN(&decode, CCA_PLATFORM_IMPLEMENTATION_ID, &impl_id);
+-	QCBORDecode_GetByteStringInMapN(&decode, CCA_PLATFORM_INSTANCE_ID, &inst_id);
+-	QCBORDecode_GetByteStringInMapN(&decode, CCA_PLATFORM_CONFIG, &config);
+-	QCBORDecode_GetUInt64InMapN(&decode, CCA_PLATFORM_LIFECYCLE, &lifecycle);
+-	QCBORDecode_GetTextStringInMapN(&decode, CCA_PLATFORM_VERIFICATION_SERVICE,
+-					&verification_service);
+-	QCBORDecode_GetTextStringInMapN(&decode, CCA_PLATFORM_HASH_ALG, &hash_alg);
+-	QCBORItem components_item;
+-	QCBORDecode_GetItemInMapN(&decode, CCA_PLATFORM_SW_COMPONENTS, QCBOR_TYPE_ARRAY,
+-				  &components_item);
+-	if (QCBORDecode_GetError(&decode) != QCBOR_SUCCESS || profile.len == 0 ||
+-	    impl_id.len != CCA_IMPLEMENTATION_ID_SIZE || inst_id.len != CCA_INSTANCE_ID_SIZE ||
+-	    lifecycle > UINT16_MAX || components_item.val.uCount == 0 ||
+-	    components_item.val.uCount == QCBOR_COUNT_INDICATES_INDEFINITE_LENGTH ||
+-	    components_item.val.uCount > payload.len ||
+-	    components_item.val.uCount > SIZE_MAX / sizeof(rtls_cca_sw_component_t))
++	QCBORDecode_GetItemsInMap(&decode, items);
++	QCBORError decode_error = QCBORDecode_GetError(&decode);
++	if (decode_error != QCBOR_SUCCESS) {
++		RTLS_ERR("CCA platform map decode error: %d\n", decode_error);
++		return -1;
++	}
++	if (items[0].uDataType == QCBOR_TYPE_NONE || items[0].val.string.len == 0) {
++		RTLS_ERR("CCA platform profile is missing or empty\n");
++		return -1;
++	}
++	if (items[1].uDataType == QCBOR_TYPE_NONE ||
++	    items[1].val.string.len != RATS_TLS_CCA_CHALLENGE_SIZE) {
++		RTLS_ERR("CCA platform challenge length is %zu, expected %u\n",
++			 items[1].uDataType == QCBOR_TYPE_NONE ? 0 : items[1].val.string.len,
++			 RATS_TLS_CCA_CHALLENGE_SIZE);
+ 		return -1;
++	}
++	if (items[2].uDataType != QCBOR_TYPE_NONE &&
++	    items[2].val.string.len != CCA_IMPLEMENTATION_ID_SIZE) {
++		RTLS_ERR("CCA platform implementation ID length is %zu, expected %u\n",
++			 items[2].val.string.len, CCA_IMPLEMENTATION_ID_SIZE);
++		return -1;
++	}
++	if (items[3].uDataType != QCBOR_TYPE_NONE &&
++	    items[3].val.string.len != CCA_INSTANCE_ID_SIZE) {
++		RTLS_ERR("CCA platform instance ID length is %zu, expected %u\n",
++			 items[3].val.string.len, CCA_INSTANCE_ID_SIZE);
++		return -1;
++	}
++
++	uint64_t lifecycle = 0;
++	if (items[5].uDataType == QCBOR_TYPE_UINT64)
++		lifecycle = items[5].val.uint64;
++	else if (items[5].uDataType == QCBOR_TYPE_INT64 && items[5].val.int64 >= 0)
++		lifecycle = (uint64_t)items[5].val.int64;
++	else if (items[5].uDataType != QCBOR_TYPE_NONE) {
++		RTLS_ERR("CCA platform lifecycle has invalid CBOR type %u\n",
++			 items[5].uDataType);
++		return -1;
++	}
++	if (lifecycle > UINT16_MAX) {
++		RTLS_ERR("CCA platform lifecycle value %#llx exceeds uint16_t\n",
++			 (unsigned long long)lifecycle);
++		return -1;
++	}
+ 
+ 	rtls_cca_platform_claims_t *view = &private->public_view.platform;
+-	if (copy_buffer(&view->profile, profile) || copy_buffer(&view->challenge, challenge) ||
+-	    copy_buffer(&view->implementation_id, impl_id) ||
+-	    copy_buffer(&view->instance_id, inst_id) || copy_buffer(&view->config, config) ||
+-	    copy_buffer(&view->verification_service, verification_service) ||
+-	    copy_buffer(&view->hash_algorithm, hash_alg))
++	if (copy_buffer(&view->profile, items[0].val.string) ||
++	    copy_buffer(&view->challenge, items[1].val.string) ||
++	    (items[2].uDataType != QCBOR_TYPE_NONE &&
++	     copy_buffer(&view->implementation_id, items[2].val.string)) ||
++	    (items[3].uDataType != QCBOR_TYPE_NONE &&
++	     copy_buffer(&view->instance_id, items[3].val.string)) ||
++	    (items[4].uDataType != QCBOR_TYPE_NONE &&
++	     copy_buffer(&view->config, items[4].val.string)) ||
++	    (items[7].uDataType != QCBOR_TYPE_NONE &&
++	     copy_buffer(&view->verification_service, items[7].val.string)) ||
++	    (items[8].uDataType != QCBOR_TYPE_NONE &&
++	     copy_buffer(&view->hash_algorithm, items[8].val.string)))
+ 		return -1;
+-	view->lifecycle = (uint16_t)lifecycle;
+-	view->software_component_count = components_item.val.uCount;
++	if (items[5].uDataType != QCBOR_TYPE_NONE)
++		view->lifecycle = (uint16_t)lifecycle;
++	if (items[6].uDataType == QCBOR_TYPE_NONE) {
++		QCBORDecode_ExitMap(&decode);
++		return QCBORDecode_Finish(&decode) == QCBOR_SUCCESS ? 0 : -1;
++	}
++	if (items[6].val.uCount == QCBOR_COUNT_INDICATES_INDEFINITE_LENGTH ||
++	    items[6].val.uCount > payload.len ||
++	    items[6].val.uCount > SIZE_MAX / sizeof(rtls_cca_sw_component_t)) {
++		RTLS_ERR("CCA platform software component count is invalid: %u\n",
++			 items[6].val.uCount);
++		return -1;
++	}
++	view->software_component_count = items[6].val.uCount;
++	if (view->software_component_count == 0) {
++		QCBORDecode_ExitMap(&decode);
++		return QCBORDecode_Finish(&decode) == QCBOR_SUCCESS ? 0 : -1;
++	}
+ 	rtls_cca_sw_component_t *components =
+ 		calloc(view->software_component_count, sizeof(*components));
+ 	if (!components)
+@@ -379,31 +472,73 @@ static int decode_platform_claims(UsefulBufC payload, cca_verifier_private_t *pr
+ 	QCBORDecode_EnterArrayFromMapN(&decode, CCA_PLATFORM_SW_COMPONENTS);
+ 	for (size_t i = 0; i < view->software_component_count; ++i) {
+ 		QCBORItem component_map;
+-		UsefulBufC type, measurement, version, signer_id, component_hash_alg;
++		QCBORItem component_items[6];
++		memset(component_items, 0, sizeof(component_items));
++		const int64_t component_labels[] = {
++			CCA_SW_COMPONENT_TYPE, CCA_SW_COMPONENT_MEASUREMENT,
++			CCA_SW_COMPONENT_VERSION, CCA_SW_COMPONENT_SIGNER_ID,
++			CCA_SW_COMPONENT_HASH_ALG,
++		};
++		const uint8_t component_types[] = {
++			QCBOR_TYPE_TEXT_STRING, QCBOR_TYPE_BYTE_STRING,
++			QCBOR_TYPE_TEXT_STRING, QCBOR_TYPE_BYTE_STRING,
++			QCBOR_TYPE_TEXT_STRING,
++		};
++		for (size_t j = 0; j < 5; ++j) {
++			component_items[j].uDataType = component_types[j];
++			component_items[j].uLabelType = QCBOR_TYPE_INT64;
++			component_items[j].label.int64 = component_labels[j];
++		}
++		component_items[5].uLabelType = QCBOR_TYPE_NONE;
+ 		QCBORDecode_EnterMap(&decode, &component_map);
+-		QCBORDecode_GetTextStringInMapN(&decode, CCA_SW_COMPONENT_TYPE, &type);
+-		QCBORDecode_GetByteStringInMapN(&decode, CCA_SW_COMPONENT_MEASUREMENT,
+-						&measurement);
+-		QCBORDecode_GetTextStringInMapN(&decode, CCA_SW_COMPONENT_VERSION, &version);
+-		QCBORDecode_GetByteStringInMapN(&decode, CCA_SW_COMPONENT_SIGNER_ID, &signer_id);
+-		QCBORDecode_GetTextStringInMapN(&decode, CCA_SW_COMPONENT_HASH_ALG,
+-						&component_hash_alg);
+-		if (QCBORDecode_GetError(&decode) != QCBOR_SUCCESS || type.len == 0 ||
+-		    version.len == 0 || copy_buffer(&components[i].component_type, type) ||
+-		    copy_buffer(&components[i].measurement, measurement) ||
+-		    copy_buffer(&components[i].version, version) ||
+-		    copy_buffer(&components[i].signer_id, signer_id) ||
+-		    copy_buffer(&components[i].hash_algorithm, component_hash_alg))
++		QCBORDecode_GetItemsInMap(&decode, component_items);
++		decode_error = QCBORDecode_GetError(&decode);
++		if (decode_error != QCBOR_SUCCESS) {
++			RTLS_ERR("CCA software component[%zu] decode error: %d\n", i,
++				 decode_error);
++			return -1;
++		}
++		if (component_items[1].uDataType != QCBOR_TYPE_NONE &&
++		    !valid_measurement_size(component_items[1].val.string.len)) {
++			RTLS_ERR("CCA software component[%zu] measurement length is %zu, expected 32, 48 or 64\n",
++				 i, component_items[1].val.string.len);
+ 			return -1;
+-		size_t digest_size = hash_size_for_name(&components[i].hash_algorithm);
+-		if (!digest_size || components[i].measurement.size != digest_size ||
+-		    components[i].signer_id.size != digest_size)
++		}
++		if ((component_items[0].uDataType != QCBOR_TYPE_NONE &&
++		     copy_buffer(&components[i].component_type,
++				 component_items[0].val.string)) ||
++		    (component_items[1].uDataType != QCBOR_TYPE_NONE &&
++		     copy_buffer(&components[i].measurement,
++				 component_items[1].val.string)) ||
++		    (component_items[2].uDataType != QCBOR_TYPE_NONE &&
++		     copy_buffer(&components[i].version, component_items[2].val.string)) ||
++		    (component_items[3].uDataType != QCBOR_TYPE_NONE &&
++		     copy_buffer(&components[i].signer_id,
++				 component_items[3].val.string)) ||
++		    (component_items[4].uDataType != QCBOR_TYPE_NONE &&
++		     copy_buffer(&components[i].hash_algorithm,
++				 component_items[4].val.string)))
+ 			return -1;
++		if (components[i].hash_algorithm.data && components[i].measurement.data) {
++			size_t expected_size = hash_size_for_name(&components[i].hash_algorithm);
++			if (!expected_size || components[i].measurement.size != expected_size) {
++				RTLS_ERR("CCA software component[%zu] measurement length %zu does not match hash algorithm '%.*s'\n",
++					 i, components[i].measurement.size,
++					 (int)components[i].hash_algorithm.size,
++					 (const char *)components[i].hash_algorithm.data);
++				return -1;
++			}
++		}
+ 		QCBORDecode_ExitMap(&decode);
+ 	}
+ 	QCBORDecode_ExitArray(&decode);
+ 	QCBORDecode_ExitMap(&decode);
+-	return QCBORDecode_Finish(&decode) == QCBOR_SUCCESS ? 0 : -1;
++	decode_error = QCBORDecode_Finish(&decode);
++	if (decode_error != QCBOR_SUCCESS) {
++		RTLS_ERR("CCA platform claims final decode error: %d\n", decode_error);
++		return -1;
++	}
++	return 0;
+ }
+ 
+ static int verify_rak_binding(const cca_verifier_private_t *private,
+@@ -426,25 +561,25 @@ static int verify_rak_binding(const cca_verifier_private_t *private,
+ static int unpack_evidence(const cca_attestation_evidence_t *evidence, const uint8_t **token,
+ 			   size_t *token_len, const uint8_t **cert, size_t *cert_len)
+ {
+-	if (evidence->report_len < sizeof(uint64_t) * 2)
++	if (evidence->report_len < sizeof(size_t) * 2)
+ 		return -1;
+ 	const uint8_t *cursor = evidence->report;
+-	uint64_t token_size = 0;
++	size_t token_size = 0;
+ 	memcpy(&token_size, cursor, sizeof(token_size));
+ 	cursor += sizeof(token_size);
+-	if (token_size == 0 || token_size > evidence->report_len - sizeof(uint64_t) * 2)
++	if (token_size == 0 || token_size > evidence->report_len - sizeof(size_t) * 2)
+ 		return -1;
+ 	cursor += token_size;
+-	uint64_t cert_size = 0;
++	size_t cert_size = 0;
+ 	memcpy(&cert_size, cursor, sizeof(cert_size));
+ 	cursor += sizeof(cert_size);
+-	uint64_t remaining = evidence->report_len - sizeof(uint64_t) * 2 - token_size;
++	size_t remaining = evidence->report_len - sizeof(size_t) * 2 - token_size;
+ 	if (cert_size == 0 || cert_size != remaining)
+ 		return -1;
+-	*token = evidence->report + sizeof(uint64_t);
+-	*token_len = (size_t)token_size;
++	*token = evidence->report + sizeof(size_t);
++	*token_len = token_size;
+ 	*cert = cursor;
+-	*cert_len = (size_t)cert_size;
++	*cert_len = cert_size;
+ 	return 0;
+ }
+ 
+@@ -467,28 +602,68 @@ enclave_verifier_err_t cca_verify_evidence(
+ 	EVP_PKEY *rak_key = NULL;
+ 	int result = -1;
+ 
+-	if (unpack_evidence(&evidence->cca, &token, &token_len, &cert_data, &cert_len) ||
+-	    verify_certificate_chain(cert_data, cert_len, &device))
++	if (unpack_evidence(&evidence->cca, &token, &token_len, &cert_data, &cert_len)) {
++		RTLS_ERR("failed to unpack CCA token and device certificate\n");
++		goto out;
++	}
++	if (token_len > sizeof(private->raw_token.buf)) {
++		RTLS_ERR("CCA token size %zu exceeds compat raw token buffer %zu\n", token_len,
++			 sizeof(private->raw_token.buf));
+ 		goto out;
++	}
++	memcpy(private->raw_token.buf, token, token_len);
++	private->raw_token.buf_size = token_len;
++	if (verify_certificate_chain(cert_data, cert_len, &device)) {
++		RTLS_ERR("failed to verify CCA device certificate chain\n");
++		goto out;
++	}
+ 
+ 	UsefulBufC platform_token, realm_token, platform_payload, realm_payload;
+-	if (decode_collection(token, token_len, &platform_token, &realm_token) ||
+-	    decode_cose_payload(platform_token, NULL, &platform_payload) ||
+-	    decode_cose_payload(realm_token, NULL, &realm_payload) ||
+-	    decode_platform_claims(platform_payload, private))
++	if (decode_collection(token, token_len, &platform_token, &realm_token)) {
++		RTLS_ERR("failed to decode CCA token collection\n");
++		goto out;
++	}
++	if (decode_cose_payload(platform_token, NULL, &platform_payload)) {
++		RTLS_ERR("failed to decode CCA platform COSE_Sign1\n");
+ 		goto out;
++	}
++	if (decode_cose_payload(realm_token, NULL, &realm_payload)) {
++		RTLS_ERR("failed to decode CCA Realm COSE_Sign1\n");
++		goto out;
++	}
++	if (decode_platform_claims(platform_payload, private)) {
++		RTLS_ERR("failed to decode CCA platform claims\n");
++		goto out;
++	}
+ 
+ 	uint8_t rak_raw[CCA_P521_PUBLIC_KEY_SIZE];
+-	if (decode_realm_claims(realm_payload, private, &rak_key, rak_raw) ||
+-	    private->public_view.realm.challenge.size != hash_len ||
+-	    memcmp(private->public_view.realm.challenge.data, hash, hash_len) ||
+-	    verify_rak_binding(private, rak_raw))
++	if (decode_realm_claims(realm_payload, private, &rak_key, rak_raw)) {
++		RTLS_ERR("failed to decode CCA Realm claims\n");
+ 		goto out;
++	}
++	if (private->public_view.realm.challenge.size < hash_len ||
++	    memcmp(private->public_view.realm.challenge.data, hash, hash_len)) {
++		RTLS_ERR("CCA Realm challenge does not match the RATS-TLS evidence hash\n");
++		goto out;
++	}
++	if (verify_rak_binding(private, rak_raw)) {
++		RTLS_ERR("CCA platform challenge does not bind the Realm attestation key\n");
++		goto out;
++	}
+ 
+ 	device_key = X509_get_pubkey(device);
+-	if (!device_key || decode_cose_payload(platform_token, device_key, &platform_payload) ||
+-	    decode_cose_payload(realm_token, rak_key, &realm_payload))
++	if (!device_key) {
++		RTLS_ERR("failed to extract CCA device certificate public key\n");
+ 		goto out;
++	}
++	if (decode_cose_payload(platform_token, device_key, &platform_payload)) {
++		RTLS_ERR("failed to verify CCA platform token signature\n");
++		goto out;
++	}
++	if (decode_cose_payload(realm_token, rak_key, &realm_payload)) {
++		RTLS_ERR("failed to verify CCA Realm token signature\n");
++		goto out;
++	}
+ 
+ 	result = 0;
+ out:
+-- 
+2.47.3
+

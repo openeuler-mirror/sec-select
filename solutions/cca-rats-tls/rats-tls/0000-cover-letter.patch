@@ -1,0 +1,113 @@
+From 3a2d27c7778a7b13fc444302eb2a6bc4e8458003 Mon Sep 17 00:00:00 2001
+From: ryk <renjunkai1@h-partners.com>
+Date: Mon, 13 Jul 2026 19:26:55 +0800
+Subject: [PATCH 0/2] Add Arm CCA RA-TLS attestation and samples
+
+This series adds the CCA attester and verifier, integrates CCA evidence into
+the OpenSSL RA-TLS certificate flow, and adds CCA client/server samples with
+measurement-log and baseline validation helpers.
+
+Apply this series on top of:
+
+  40f7b78403d75d13b1a372c769b2600f62b02692
+  samples: Clean up banner info
+
+The first patch contains the attester/verifier and certificate integration.
+The second adds the CCA command-line samples, baseline helpers and packaging
+metadata.
+
+ryk (2):
+  cca verifier and attester
+  cca verifier and attester cli command
+
+ CMakeLists.txt                                |    6 +-
+ dist/deb/debian/control.in                    |    2 +-
+ dist/rpm/rats_tls.spec.in                     |    1 +
+ samples/CMakeLists.txt                        |    4 +
+ samples/cca-client/CMakeLists.txt             |   18 +
+ samples/cca-client/client.c                   |  249 ++++
+ samples/cca-common/cca_log.c                  | 1045 +++++++++++++++++
+ samples/cca-common/cca_log.h                  |   12 +
+ samples/cca-common/cca_policy.c               |  350 ++++++
+ samples/cca-common/cca_policy.h               |    7 +
+ samples/cca-common/cca_sample.c               |  312 +++++
+ samples/cca-common/cca_sample.h               |   66 ++
+ samples/cca-server/CMakeLists.txt             |   11 +
+ samples/cca-server/server.c                   |  324 +++++
+ scripts/cca_collect_baselines.py              |  222 ++++
+ src/CMakeLists.txt                            |    3 +-
+ src/api/rats_tls_init.c                       |    8 +
+ src/attesters/CMakeLists.txt                  |    4 +
+ src/attesters/cca/CMakeLists.txt              |   14 +
+ src/attesters/cca/cca_attester.h              |   17 +
+ src/attesters/cca/cleanup.c                   |   12 +
+ src/attesters/cca/collect_evidence.c          |  123 ++
+ src/attesters/cca/init.c                      |   14 +
+ src/attesters/cca/main.c                      |   29 +
+ src/attesters/cca/pre_init.c                  |   20 +
+ .../internal/rtls_enclave_attester_select.c   |    2 +-
+ src/core/cpu.c                                |   10 +-
+ src/core/dice.c                               |   56 +-
+ src/core/rtls_core_generate_certificate.c     |   19 +-
+ .../internal/rtls_crypto_wrapper_select.c     |    2 +-
+ src/include/internal/dice.h                   |    9 +-
+ src/include/rats-tls/api.h                    |    4 +-
+ src/include/rats-tls/attester.h               |    1 +
+ src/include/rats-tls/cca.h                    |   54 +
+ src/include/rats-tls/cert.h                   |    6 +
+ src/include/rats-tls/err.h                    |    1 +
+ src/include/rats-tls/tls_wrapper.h            |    8 +
+ src/include/rats-tls/verifier.h               |    1 +
+ ...tls_wrapper_verify_certificate_extension.c |   37 +
+ .../internal/rtls_tls_wrapper_select.c        |    2 +-
+ src/tls_wrappers/nulltls/negotiate.c          |    6 +-
+ src/tls_wrappers/openssl/CMakeLists.txt       |    3 +
+ src/tls_wrappers/openssl/get_nonce.c          |   28 +
+ src/tls_wrappers/openssl/main.c               |    6 +
+ src/tls_wrappers/openssl/negotiate.c          |   15 +
+ src/tls_wrappers/openssl/un_negotiate.c       |   32 +-
+ src/tls_wrappers/openssl/use_cert.c           |   21 +-
+ src/tls_wrappers/openssl/use_privkey.c        |   10 +-
+ src/verifiers/CMakeLists.txt                  |    4 +
+ src/verifiers/cca/CMakeLists.txt              |   16 +
+ src/verifiers/cca/cca_verifier.h              |   21 +
+ src/verifiers/cca/cleanup.c                   |   14 +
+ src/verifiers/cca/init.c                      |   14 +
+ src/verifiers/cca/main.c                      |   29 +
+ src/verifiers/cca/pre_init.c                  |    7 +
+ src/verifiers/cca/trust_anchors.h             |   45 +
+ src/verifiers/cca/verify_evidence.c           |  679 +++++++++++
+ 57 files changed, 4018 insertions(+), 17 deletions(-)
+ create mode 100644 samples/cca-client/CMakeLists.txt
+ create mode 100644 samples/cca-client/client.c
+ create mode 100644 samples/cca-common/cca_log.c
+ create mode 100644 samples/cca-common/cca_log.h
+ create mode 100644 samples/cca-common/cca_policy.c
+ create mode 100644 samples/cca-common/cca_policy.h
+ create mode 100644 samples/cca-common/cca_sample.c
+ create mode 100644 samples/cca-common/cca_sample.h
+ create mode 100644 samples/cca-server/CMakeLists.txt
+ create mode 100644 samples/cca-server/server.c
+ create mode 100755 scripts/cca_collect_baselines.py
+ create mode 100644 src/attesters/cca/CMakeLists.txt
+ create mode 100644 src/attesters/cca/cca_attester.h
+ create mode 100644 src/attesters/cca/cleanup.c
+ create mode 100644 src/attesters/cca/collect_evidence.c
+ create mode 100644 src/attesters/cca/init.c
+ create mode 100644 src/attesters/cca/main.c
+ create mode 100644 src/attesters/cca/pre_init.c
+ create mode 100644 src/include/rats-tls/cca.h
+ create mode 100644 src/tls_wrappers/openssl/get_nonce.c
+ create mode 100644 src/verifiers/cca/CMakeLists.txt
+ create mode 100644 src/verifiers/cca/cca_verifier.h
+ create mode 100644 src/verifiers/cca/cleanup.c
+ create mode 100644 src/verifiers/cca/init.c
+ create mode 100644 src/verifiers/cca/main.c
+ create mode 100644 src/verifiers/cca/pre_init.c
+ create mode 100644 src/verifiers/cca/trust_anchors.h
+ create mode 100644 src/verifiers/cca/verify_evidence.c
+
+
+base-commit: 40f7b78403d75d13b1a372c769b2600f62b02692
+-- 
+2.47.3
