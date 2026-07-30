@@ -1,0 +1,20 @@
+[package]
+name = "ratls-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "ratls_api"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+ciborium.workspace = true
+coset.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+openssl.workspace = true
+openssl-sys.workspace = true
+foreign-types-shared.workspace = true
+libc.workspace = true
