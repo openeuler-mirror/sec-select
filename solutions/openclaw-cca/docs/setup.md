@@ -317,11 +317,31 @@ rbs-cli -b ${RBS_SERVER} -t ${ACCESS_KEY} res-policy create --name policy-01 --c
 # 保存上一步生成的policy-id，如c28a6e63-b0b2-4fdd-9832-4d297f28e31e
 rbs-cli -b ${RBS_SERVER} -t ${ACCESS_KEY} res create --provider-name vault --repository-name default --resource-type secret --resource-name mysecret --policy-id c28a6e63-b0b2-4fdd-9832-4d297f28e31e
 ```
-# 安全容器内环境安装与验证
+# 安全容器内（虚机）环境安装与验证
 
 在安全容器内安装rbc-cli
 ```bash
-dnf install globaltrustauthority-rbs-rbc-devel
+dnf install global-trust-authority-agent globaltrustauthority-rbs-rbc-devel
+```
+
+编辑`/etc/attestation_agent/agent_config.yaml`，将所有的`ccel_data_path`更改为`boot_log_file_path`
+```bash
+sed -i 's|ccel_data_path|boot_log_file_path|' /etc/attestation_agent/agent_config.yaml
+```
+并更改其中
+1. server部分为对应HTTP地址（或导入HTTPS CA证书）
+2. plugins/enabled除所需的（如CCA）外保持false
+
+使能CCA
+```bash
+modprobe tsm
+modprobe arm_cca_guest
+mount -t configfs none /sys/kernel/config
+export report=/sys/kernel/config/tsm/report/report0
+mkdir $report
+dd if=/dev/urandom bs=64 count=1 > $report/inblob
+hexdump -C $report/outblob
+hexdump -C $report/auxblob
 ```
 
 测试RBS与Attestation_Server的连接
@@ -347,6 +367,7 @@ openssl genrsa -out attester.key 4096
 openssl pkey -in attester.key -pubout -out attester.pub
 ```
 
+测试RBS接口
 ```bash
 # 准备一次性nonce
 rbc-cli -b ${RBS_SERVER} challenge > nonce
