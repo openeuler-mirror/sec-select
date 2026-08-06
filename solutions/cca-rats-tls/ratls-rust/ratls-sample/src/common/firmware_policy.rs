@@ -51,21 +51,23 @@ pub struct KernelBaseline {
 /// Load and validate a firmware baseline JSON file.
 pub fn load_firmware_baseline(path: &str) -> Result<FirmwareBaseline> {
     let text = fs::read_to_string(path)?;
-    let baseline: FirmwareBaseline = serde_json::from_str(&text)?;
+    let baseline: FirmwareBaseline = serde_json::from_str(&text).map_err(|error| {
+        RaTlsError::InvalidData(format!("invalid firmware baseline JSON `{path}`: {error}"))
+    })?;
     if baseline.hash_alg != "sha-256" {
         return Err(RaTlsError::InvalidData(format!(
-            "unsupported firmware hash_alg: {}",
+            "firmware baseline `{path}` field `hash_alg` must be `sha-256`; got `{}`",
             baseline.hash_alg
         )));
     }
-    validate_sha256_hex("grub", &baseline.grub)?;
-    validate_sha256_hex("grub.cfg", &baseline.grub_cfg)?;
-    for kernel in &baseline.kernels {
+    validate_sha256_hex(path, "grub", &baseline.grub)?;
+    validate_sha256_hex(path, "grub.cfg", &baseline.grub_cfg)?;
+    for (index, kernel) in baseline.kernels.iter().enumerate() {
         if let Some(value) = &kernel.kernel {
-            validate_sha256_hex("kernel", value)?;
+            validate_sha256_hex(path, &format!("kernels[{index}].kernel"), value)?;
         }
         if let Some(value) = &kernel.initramfs {
-            validate_sha256_hex("initramfs", value)?;
+            validate_sha256_hex(path, &format!("kernels[{index}].initramfs"), value)?;
         }
     }
     Ok(baseline)
@@ -115,11 +117,24 @@ pub fn verify_firmware_baseline(path: &str, state: &FirmwareState) -> Result<()>
     Ok(())
 }
 
-fn validate_sha256_hex(name: &str, value: &str) -> Result<()> {
-    let decoded = hex_decode(value)?;
-    if decoded.len() != 32 {
+fn validate_sha256_hex(file: &str, field: &str, value: &str) -> Result<()> {
+    let digest = value.trim();
+    let character_count = digest.chars().count();
+    if character_count != 64 {
         return Err(RaTlsError::InvalidData(format!(
-            "{name} must be 32-byte sha256 hex"
+            "firmware baseline `{file}` field `{field}` must be a 64-character hexadecimal \
+             SHA-256 digest; got {character_count} characters"
+        )));
+    }
+    if let Some((position, character)) = digest
+        .chars()
+        .enumerate()
+        .find(|(_, character)| !character.is_ascii_hexdigit())
+    {
+        return Err(RaTlsError::InvalidData(format!(
+            "firmware baseline `{file}` field `{field}` contains invalid hexadecimal character \
+             '{character}' at position {}",
+            position + 1
         )));
     }
     Ok(())
@@ -207,6 +222,44 @@ mod tests {
         let mut bad = base;
         bad.kernel = Some(vec![9; 32]);
         assert!(verify_firmware_baseline(path.to_str().unwrap(), &bad).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reports_the_file_and_json_location_for_malformed_input() {
+        let path = temporary_json(
+            r#"{
+                "hash_alg":"sha-256",
+                "grub":"00"
+                "grub.cfg":"00",
+                "kernels":[]
+            }"#,
+        );
+
+        let error = load_firmware_baseline(path.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid firmware baseline JSON"), "{error}");
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(error.contains("line 4 column"), "{error}");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reports_the_full_field_path_for_an_invalid_kernel_digest() {
+        let invalid_digest = format!("{}g", "0".repeat(63));
+        let contents = baseline(1, 2, 3, 4).replace(&hex_encode(&[3; 32]), &invalid_digest);
+        let path = temporary_json(&contents);
+
+        let error = load_firmware_baseline(path.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(error.contains("`kernels[0].kernel`"), "{error}");
+        assert!(
+            error.contains("invalid hexadecimal character 'g'"),
+            "{error}"
+        );
         fs::remove_file(path).unwrap();
     }
 }

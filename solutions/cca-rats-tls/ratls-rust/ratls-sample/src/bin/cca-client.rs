@@ -42,7 +42,11 @@ const ATTESTATION_PASS: &[u8] = b"ATTESTATION_PASS";
 
 type SharedVerifiedRems = Arc<Mutex<Option<Vec<Vec<u8>>>>>;
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    cli::report_command_result(run())
+}
+
+fn run() -> Result<()> {
     let args = Args::parse_validated();
     set_log_level(args.log_level.into());
     rtls_debug!(
@@ -130,7 +134,7 @@ fn main() -> Result<()> {
     let message = args.message_payload()?;
     send_frame(stream.as_mut(), &message)?;
     let response = receive_frame(stream.as_mut(), 4096)?;
-    println!("CCA server echoed {} bytes", response.len());
+    println!("[INFO] CCA server echoed {} bytes", response.len());
 
     send_frame(stream.as_mut(), ATTESTATION_PASS)?;
     let ack = receive_frame(stream.as_mut(), 4096)?;
@@ -208,7 +212,8 @@ struct Args {
     #[arg(
         long,
         default_value_t = cli::MAX_LOG_SIZE,
-        value_parser = cli::parse_max_log
+        value_parser = cli::parse_max_log,
+        allow_negative_numbers = true
     )]
     max_log: usize,
 
@@ -229,7 +234,8 @@ struct Args {
 
 impl Args {
     fn parse_validated() -> Self {
-        Self::try_parse_validated_from(std::env::args_os()).unwrap_or_else(|error| error.exit())
+        Self::try_parse_validated_from(std::env::args_os())
+            .unwrap_or_else(|error| cli::exit_with_clap_error(error))
     }
 
     fn try_parse_validated_from<I, T>(arguments: I) -> std::result::Result<Self, clap::Error>
@@ -311,9 +317,10 @@ fn configure_verification_callback(
                     .and_then(hex_decode)?;
                 if &actual != expected {
                     return Err(RaTlsError::InvalidData(format!(
-                        "RIM verification failed: expected {} bytes, got {} bytes",
-                        expected.len(),
-                        actual.len()
+                        "RIM verification failed: collected RIM ({} bytes) does not match \
+                         configured RIM ({} bytes)",
+                        actual.len(),
+                        expected.len()
                     )));
                 }
                 eprintln!("[INFO] RIM verification passed");
@@ -393,6 +400,15 @@ mod tests {
     fn rejects_invalid_network_values() {
         assert!(Args::try_parse_validated_from(["cca-client", "--ip", "localhost"]).is_err());
         assert!(Args::try_parse_validated_from(["cca-client", "--port", "0"]).is_err());
+
+        let negative =
+            Args::try_parse_validated_from(["cca-client", "--max-log", "-1"]).unwrap_err();
+        let message = negative.to_string();
+        assert!(message.contains("invalid value '-1'"), "{message}");
+        assert!(
+            message.contains("max-log must be an integer from 1 to 10485760"),
+            "{message}"
+        );
     }
 
     #[test]

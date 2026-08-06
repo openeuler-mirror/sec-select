@@ -39,7 +39,11 @@ const REQUEST_EVENT_LOG: &[u8] = b"REQUEST_EVENT_LOG";
 const ENABLE_FDE_TOKEN: &[u8] = b"ENABLE_FDE_TOKEN";
 const ATTESTATION_PASS: &[u8] = b"ATTESTATION_PASS";
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    cli::report_command_result(run())
+}
+
+fn run() -> Result<()> {
     let args = Args::parse_validated();
     set_log_level(args.log_level.into());
     let certificate = args.certificate.load()?;
@@ -187,7 +191,8 @@ struct Args {
     #[arg(
         long,
         default_value_t = cli::DEFAULT_MAX_KEY_SIZE,
-        value_parser = cli::parse_max_key
+        value_parser = cli::parse_max_key,
+        allow_negative_numbers = true
     )]
     max_key: usize,
 
@@ -208,7 +213,8 @@ struct Args {
 
 impl Args {
     fn parse_validated() -> Self {
-        Self::try_parse_validated_from(std::env::args_os()).unwrap_or_else(|error| error.exit())
+        Self::try_parse_validated_from(std::env::args_os())
+            .unwrap_or_else(|error| cli::exit_with_clap_error(error))
     }
 
     fn try_parse_validated_from<I, T>(arguments: I) -> std::result::Result<Self, clap::Error>
@@ -293,9 +299,10 @@ fn configure_verification_callback(handle: &mut RaTlsHandle, args: &Args) -> Res
                     .and_then(hex_decode)?;
                 if &actual != expected {
                     return Err(RaTlsError::InvalidData(format!(
-                        "RIM verification failed: expected {} bytes, got {} bytes",
-                        expected.len(),
-                        actual.len()
+                        "RIM verification failed: collected RIM ({} bytes) does not match \
+                         configured RIM ({} bytes)",
+                        actual.len(),
+                        expected.len()
                     )));
                 }
                 eprintln!("[INFO] RIM verification passed");
@@ -329,6 +336,15 @@ mod tests {
         assert!(Args::try_parse_validated_from(["cca-server", "--ip", "localhost"]).is_err());
         assert!(Args::try_parse_validated_from(["cca-server", "--port", "0"]).is_err());
         assert!(Args::try_parse_validated_from(["cca-server", "--max-key", "1048577",]).is_err());
+
+        let negative =
+            Args::try_parse_validated_from(["cca-server", "--max-key", "-1"]).unwrap_err();
+        let message = negative.to_string();
+        assert!(message.contains("invalid value '-1'"), "{message}");
+        assert!(
+            message.contains("max-key must be an integer from 1 to 1048576"),
+            "{message}"
+        );
     }
 
     #[test]
