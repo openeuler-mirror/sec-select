@@ -12,9 +12,11 @@
 
 //! Shared validation for the sample command-line programs.
 
+use std::fmt::Display;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::process::{self, ExitCode};
 
 use ratls_api::{RaTlsError, Result};
 
@@ -24,6 +26,51 @@ pub const MAX_KEY_SIZE: usize = 1024 * 1024;
 pub const MAX_MESSAGE_SIZE: usize = 4096;
 pub const MAX_JSON_POLICY_SIZE: usize = 1024 * 1024;
 pub const MAX_DIGEST_POLICY_SIZE: usize = 10 * 1024 * 1024;
+
+/// Print a clap diagnostic with the sample's standard severity prefix, then exit.
+pub fn exit_with_clap_error(error: clap::Error) -> ! {
+    if matches!(
+        error.kind(),
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+    ) {
+        error.exit();
+    }
+    let exit_code = error.exit_code();
+    eprint!("{}", format_clap_error(&error));
+    process::exit(exit_code);
+}
+
+/// Report a sample command's final result using the standard log prefix.
+pub fn report_command_result(result: Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{}", format_command_error(&error));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn format_clap_error(error: &clap::Error) -> String {
+    let rendered = error.to_string().replacen("error:", "[ERROR]", 1);
+    if error.kind() != clap::error::ErrorKind::MissingRequiredArgument {
+        return rendered;
+    }
+    let Some((diagnostic, remainder)) = rendered.split_once("\n\n") else {
+        return rendered;
+    };
+    let diagnostic = diagnostic
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{diagnostic}\n\n{remainder}")
+}
+
+fn format_command_error(error: &impl Display) -> String {
+    format!("[ERROR] {error}")
+}
 
 pub fn parse_port(value: &str) -> std::result::Result<u16, String> {
     let port = value
@@ -213,6 +260,38 @@ mod tests {
         assert!(parse_rim("0").is_err());
         assert!(parse_rim("xyz0").is_err());
         assert!(parse_rim(&"00".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn command_errors_use_the_standard_error_prefix() {
+        let runtime_error = RaTlsError::InvalidData("bad firmware baseline".into());
+        assert_eq!(
+            format_command_error(&runtime_error),
+            "[ERROR] invalid data: bad firmware baseline"
+        );
+
+        let clap_error =
+            clap::Command::new("sample").error(clap::error::ErrorKind::InvalidValue, "bad option");
+        let rendered = format_clap_error(&clap_error);
+        assert!(rendered.starts_with("[ERROR] bad option"), "{rendered}");
+        assert!(!rendered.contains("error:"), "{rendered}");
+
+        let missing_arguments = clap::Command::new("sample")
+            .arg(
+                clap::Arg::new("bootlog")
+                    .long("bootlog")
+                    .action(clap::ArgAction::SetTrue)
+                    .required(true),
+            )
+            .try_get_matches_from(["sample"])
+            .unwrap_err();
+        let rendered = format_clap_error(&missing_arguments);
+        assert!(
+            rendered.starts_with(
+                "[ERROR] the following required arguments were not provided: --bootlog\n\nUsage:"
+            ),
+            "{rendered}"
+        );
     }
 
     #[test]

@@ -44,6 +44,17 @@ impl LogLevel {
             _ => Self::None,
         }
     }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Debug => "DEBUG",
+            Self::Info => "INFO",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+            Self::Fatal => "FATAL",
+            Self::None => "NONE",
+        }
+    }
 }
 
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Error as u8);
@@ -65,10 +76,10 @@ pub fn log(level: LogLevel, module: &'static str, line: u32, args: fmt::Argument
     }
     match level {
         LogLevel::Error | LogLevel::Fatal => {
-            eprintln!("[{level:?}] {module}@L{line}: {args}");
+            eprintln!("[{}] {module}@L{line}: {args}", level.label());
         }
         LogLevel::Debug | LogLevel::Info | LogLevel::Warn => {
-            println!("[{level:?}] {module}@L{line}: {args}");
+            println!("[{}] {module}@L{line}: {args}", level.label());
         }
         LogLevel::None => {}
     }
@@ -128,6 +139,13 @@ mod tests {
 
     #[test]
     fn stores_every_log_level_and_exercises_enabled_and_disabled_output() {
+        assert_eq!(LogLevel::Debug.label(), "DEBUG");
+        assert_eq!(LogLevel::Info.label(), "INFO");
+        assert_eq!(LogLevel::Warn.label(), "WARN");
+        assert_eq!(LogLevel::Error.label(), "ERROR");
+        assert_eq!(LogLevel::Fatal.label(), "FATAL");
+        assert_eq!(LogLevel::None.label(), "NONE");
+
         for level in [
             LogLevel::Debug,
             LogLevel::Info,
