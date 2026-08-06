@@ -13,6 +13,8 @@ OpenClaw-CCA 将 OpenClaw 的全部持久化数据加密存储在 LUKS2 加密�
 - **会话状态**：持久化会话快照、缓存中间结果
 - **运行时元数据**：日志、审计记录、Skill workspace
 
+![demo](docs/images/demo.png)
+
 ## 信任链
 
 ```

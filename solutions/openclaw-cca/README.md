@@ -13,6 +13,8 @@ The encrypted volume holds:
 - **Session state**: persistent session snapshots, cached intermediate results
 - **Runtime metadata**: logs, audit records, skill workspaces
 
+![demo](docs/images/demo.png)
+
 ## Trust Chain
 
 ```
