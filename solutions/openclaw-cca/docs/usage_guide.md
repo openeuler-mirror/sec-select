@@ -136,19 +136,45 @@ sudo openclaw-init.sh
 
 ### 步骤二：生成策略并上传 RBS
 
-在**可信设备**上，使用 `scripts/gen_policy.py` 根据基线文件生成策略，并上传至 GTA 服务端和 RBS（具体操作参考 GTA 及 RBS 文档）：
+在**可信设备**上，使用 `scripts/gen_policy.py` 根据基线文件生成策略，使用base64解码并上传至 GTA 服务端和 RBS（具体操作参考 GTA 及 RBS 文档）：
 
 ```bash
 python3 scripts/gen_policy.py /tmp/baseline_jwt.txt
 ```
 
+Example（假设在RBS server运行）：
+```bash
+# 解码resource policy
+base64 -d << EOF > ./rego
+策略
+EOF
+
+export RBS_SERVER=http://127.0.0.1:6666
+export ACCESS_KEY=$(rbs-cli token gen --private-key-file /etc/rbs/admin.pem)
+rbs-cli -b ${RBS_SERVER} -t ${ACCESS_KEY} res-policy create --name policy-01 --content @./rego
+# 保存上一步生成的policy-id，如c28a6e63-b0b2-4fdd-9832-4d297f28e31e
+```
+
+
 
 ### 步骤三：生成 passphrase 并上传 RBS
 
-在可信设备生成 passphrase（建议使用强随机值），绑定步骤二生成的policy_id，上传至 RBS，记录返回的 `key_uri`。
+在可信设备生成 passphrase（建议使用强随机值），绑定步骤二生成的policy_id，上传至 RBS（其中key-value对中key为content，value为对应passphrase），记录返回的 `key_uri`。
 
 ```sh
 dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64
+```
+
+Example（假设在RBS server运行）：
+```bash
+# 在bao上运行
+export BAO_ADDR=http://127.0.0.1:8200
+bao kv put secret/default/secret/openclaw content=${PASSPHRASE}
+
+# 操作RBS
+export RBS_SERVER=http://127.0.0.1:6666
+export ACCESS_KEY=$(rbs-cli token gen --private-key-file /etc/rbs/admin.pem --role Administrator)
+rbs-cli -b ${RBS_SERVER} -t ${ACCESS_KEY} res create --provider-name vault --repository-name default --resource-type secret --resource-name openclaw --policy-id c28a6e63-b0b2-4fdd-9832-4d297f28e31e
 ```
 
 ### 步骤四：创建加密卷
@@ -162,7 +188,7 @@ sudo openclaw-create-volume.sh <key_uri>
 示例：
 
 ```bash
-sudo openclaw-create-volume.sh xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+sudo openclaw-create-volume.sh vault/default/secret/openclaw
 ```
 
 默认创建 1GB 加密存储，挂载于 `/opt/openclaw-data`。如需调整：

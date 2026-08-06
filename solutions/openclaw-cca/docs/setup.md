@@ -332,13 +332,13 @@ sed -i 's|ccel_data_path|boot_log_file_path|' /etc/attestation_agent/agent_confi
 1. server部分为对应HTTP地址（或导入HTTPS CA证书）
 2. plugins/enabled除所需的（如CCA）外保持false
 
-使能CCA
+使能CCA（以sudo/root身份运行以下命令）
 ```bash
 modprobe tsm
 modprobe arm_cca_guest
 mount -t configfs none /sys/kernel/config
 export report=/sys/kernel/config/tsm/report/report0
-mkdir $report
+mkdir -p $report
 dd if=/dev/urandom bs=64 count=1 > $report/inblob
 hexdump -C $report/outblob
 hexdump -C $report/auxblob
