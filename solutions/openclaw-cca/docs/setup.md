@@ -480,7 +480,7 @@ EOF
 ### 3.3 在 openBao 中写入秘密
 
 ```bash
-# 语法: bao kv put secret/<repo>/<res>/<content-type>/<name> key=value
+# 语法: bao kv put secret/<repository>/<resource-type>/<resource-name> key=value
 bao kv put secret/default/secret/mysecret username=private-username
 ```
 
@@ -514,19 +514,13 @@ rbs-cli -b ${RBS_SERVER} -t ${ACCESS_KEY} res-policy create \
 
 ```bash
 rbs-cli -b ${RBS_SERVER} -t ${ACCESS_KEY} res create \
-    --provider-name vault \
-    --repository-name default \
-    --resource-type secret \
-    --resource-name mysecret \
+    --uri vault/default/secret/mysecret \
     --policy-id c28a6e63-b0b2-4fdd-9832-4d297f28e31e
 ```
 
 | 参数 | 说明 | 对应 openBao 路径 |
 |------|------|-------------------|
-| `--provider-name` | 资源提供者名称 | `vault` |
-| `--repository-name` | 仓库名称 | `default` |
-| `--resource-type` | 资源类型 | `secret` |
-| `--resource-name` | 资源名称 | `mysecret` |
+| `--uri` | 资源 URI | `vault/default/secret/mysecret` |
 | `--policy-id` | 绑定的策略 ID | 步骤 [3.4](#34-在-rbs-中创建资源策略) 返回的 ID |
 
 > 注册后资源的 URI 为 `vault/default/secret/mysecret`，虚机内的 rbc-cli 通过此 URI 获取资源。

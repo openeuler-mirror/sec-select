@@ -265,14 +265,11 @@ export RBS_SERVER=http://127.0.0.1:6666
 export ACCESS_KEY=$(rbs-cli token gen --private-key-file /etc/rbs/admin.pem --role Administrator)
 
 rbs-cli -b ${RBS_SERVER} -t ${ACCESS_KEY} res create \
-    --provider-name vault \
-    --repository-name default \
-    --resource-type secret \
-    --resource-name openclaw \
+    --uri vault/default/secret/openclaw \
     --policy-id c28a6e63-b0b2-4fdd-9832-4d297f28e31e
 ```
 
-> **记录返回的 `key_uri`**（格式如 `vault/default/secret/openclaw`），后续创建加密卷时需要使用。
+> **记录资源 URI `vault/default/secret/openclaw`**，后续创建加密卷时需要使用。
 
 ### 步骤四：创建加密卷
 

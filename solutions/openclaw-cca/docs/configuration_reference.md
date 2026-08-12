@@ -427,19 +427,13 @@ rbs-cli -b <RBS_URL> -t <TOKEN> res-policy create --name <名称> --content <策
 
 ```bash
 rbs-cli -b <RBS_URL> -t <TOKEN> res create \
-    --provider-name <提供者> \
-    --repository-name <仓库名> \
-    --resource-type <类型> \
-    --resource-name <名称> \
+    --uri <资源URI> \
     --policy-id <策略ID>
 ```
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `--provider-name` | 资源提供者名称 | `vault` |
-| `--repository-name` | 仓库名称 | `default` |
-| `--resource-type` | 资源类型 | `secret` |
-| `--resource-name` | 资源名称 | `openclaw` |
+| `--uri` | 资源 URI，格式为 `<provider>/<repository>/<resource-type>/<resource-name>` | `<资源URI>` |
 | `--policy-id` | 绑定的策略 ID | `c28a6e63-...` |
 
 #### challenge / collect-evidence / get-resource / get-token
