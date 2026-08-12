@@ -37,21 +37,7 @@
 
 ## 1. 适用范围与软件版本
 
-OpenEuler 24.03 SP4 LTS 最小安装。本文基于以下软件包版本（`0.0.1-30.oe2403`）提供构建教程。
-
-| 软件包 | 大小 | 更新日期 |
-|---|---|---|
-| global-trust-authority-agent-0.0.1-30.oe2403sp4.x86_64.rpm | 20.9 MiB | 2026-Jun-30 15:38 |
-| global-trust-authority-cli-0.0.1-30.oe2403sp4.x86_64.rpm | 19.7 MiB | 2026-Jun-30 15:40 |
-| global-trust-authority-debuginfo-0.0.1-30.oe2403sp4.x86_64.rpm | 425.4 MiB | 2026-Jun-30 15:41 |
-| global-trust-authority-debugsource-0.0.1-30.oe2403sp4.x86_64.rpm | 13.3 MiB | 2026-Jun-30 15:38 |
-| global-trust-authority-key-manager-0.0.1-30.oe2403sp4.x86_64.rpm | 3.8 MiB | 2026-Jun-30 15:38 |
-| global-trust-authority-server-0.0.1-30.oe2403sp4.x86_64.rpm | 38.2 MiB | 2026-Jun-30 15:40 |
-| globaltrustauthority-rbs-cli-0.0.1-2.oe2403sp4.x86_64.rpm | 4.5 MiB | 2026-Jun-30 15:39 |
-| globaltrustauthority-rbs-debuginfo-0.0.1-2.oe2403sp4.x86_64.rpm | 182.7 MiB | 2026-Jun-30 15:39 |
-| globaltrustauthority-rbs-debugsource-0.0.1-2.oe2403sp4.x86_64.rpm | 10.7 MiB | 2026-Jun-30 15:41 |
-| globaltrustauthority-rbs-rbc-devel-0.0.1-2.oe2403sp4.x86_64.rpm | 7.5 MiB | 2026-Jun-30 15:38 |
-| globaltrustauthority-rbs-rbs-0.0.1-2.oe2403sp4.x86_64.rpm | 8.5 MiB | 2026-Jun-30 15:40 |
+OpenEuler 24.03 SP4 LTS 最小安装。本文基于GTA软件包版本（`0.0.1-36.oe1`）和GTA-RBS软件包版本（`0.0.1-6.oe1`）提供构建教程。
 
 ---
 
