@@ -369,8 +369,10 @@ WantedBy=multi-user.target
 
 ### 步骤六：写入 API Key
 
+默认使用 `vi` 打开配置文件；也可按个人习惯改用 `vim` 或 `nano`：
+
 ```bash
-sudo nano /opt/openclaw-data/openclaw.json
+sudo vi /opt/openclaw-data/openclaw.json
 ```
 
 在配置文件中填入 API Key（参考 openclaw 文档中的配置格式）。
@@ -422,7 +424,7 @@ OpenClaw-CCA 同时支持硬件 CCA 和虚拟 CCA（vCCA），两者的主要配
 | JWT 字段路径 | `cca.realm_token` | `virt_cca.realm_token` |
 | 度量键名 | `cca_rpv`、`cca_rim`、`cca_rem[0-3]` | `vcca_rpv`、`vcca_rim`、`vcca_rem[0-3]` |
 | 内核模块 | 需加载 `arm_cca_guest` + `tsm` | 不需要 |
-| Attestation Agent 插件 | `cca` 插件 | `virt_cca` 插件 |
+| Attestation Agent 插件 | `plugins` 列表中 `name: "cca"` 的条目设为 `enabled: true`，`name: "virt_cca"` 的条目设为 `enabled: false` | `plugins` 列表中 `name: "cca"` 的条目设为 `enabled: false`，`name: "virt_cca"` 的条目设为 `enabled: true` |
 | 策略生成 | `gen_policy.py`（默认 CCA） | `gen_policy.py --type vcca` |
 | attest skill | `openclaw-cca-attest` | `openclaw-vcca-attest` |
 
@@ -433,17 +435,19 @@ OpenClaw-CCA 同时支持硬件 CCA 和虚拟 CCA（vCCA），两者的主要配
 ```yaml
 # CCA 模式
 plugins:
-  enabled:
-    cca: true
-    virt_cca: false
-    # 其他插件保持 false
+  - name: "cca"
+    enabled: true
+  - name: "virt_cca"
+    enabled: false
+  # 其他插件条目的 enabled 保持 false
 
 # vCCA 模式
 plugins:
-  enabled:
-    cca: false
-    virt_cca: true
-    # 其他插件保持 false
+  - name: "cca"
+    enabled: false
+  - name: "virt_cca"
+    enabled: true
+  # 其他插件条目的 enabled 保持 false
 ```
 
 #### 2. 内核模块加载

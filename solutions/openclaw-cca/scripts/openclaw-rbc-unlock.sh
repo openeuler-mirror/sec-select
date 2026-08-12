@@ -60,9 +60,9 @@ extend_rem3() {
 }
 
 gen_ephemeral_keypair() {
-    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+    openssl ecparam -name prime256v1 -genkey \
         -out /tmp/oc-attester-priv.pem 2>/dev/null
-    openssl pkey -in /tmp/oc-attester-priv.pem \
+    openssl ec -in /tmp/oc-attester-priv.pem \
         -pubout -out /tmp/oc-attester-pub.pem 2>/dev/null
 }
 
@@ -74,7 +74,7 @@ cleanup_ephemeral() {
 get_passphrase() {
     local KEY_URI="$1"
 
-    echo "  [1/4] 生成临时非对称密钥对（RSA-4096）..." >&2
+    echo "  [1/4] 生成临时非对称密钥对（EC P-256）..." >&2
     gen_ephemeral_keypair
 
     load_cca_attest_module

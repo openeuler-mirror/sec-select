@@ -123,7 +123,7 @@ MYSQL_DATABASE_URL=mysql://ra_user:ra_user_password@127.0.0.1:3306/RA
 
 | 密钥 | 用途 | 算法 |
 |------|------|------|
-| FSK | File Signing Key，签名固件度量 | RSA-PSS 3072 |
+| FSK | File Signing Key，签名文件度量 | RSA-PSS 3072 |
 | NSK | Nonce Signing Key，签名 nonce | RSA-PSS 3072 |
 | TSK | Token Signing Key，签名 attestation token | RSA 4096 |
 
@@ -186,13 +186,19 @@ sqlite3 /var/lib/rbs/rbs.db "SELECT 1;"
 
 #### 2.7.1 基础配置（证明后端）
 
+默认使用 `vi` 打开配置文件；也可按个人习惯改用 `vim` 或 `nano`：
+
 ```bash
-sudo nano /etc/rbs/rbs.yaml
+sudo vi /etc/rbs/rbs.yaml
 ```
 
 修改为以下内容（关闭 JWT/JWKS 认证，使用公钥直接验证 token）：
 
 ```yaml
+rest:
+  listen_addr: "127.0.0.1:6666"   # 请在实际部署时更改为 "0.0.0.0:6666" 并配置防火墙策略
+  https:
+    enabled: false
 auth:
   attest_token:
     public_key_path: "/etc/rbs/attest_pub.pem"
@@ -223,11 +229,13 @@ attestation:
 
 #### 2.7.2 完整配置（含资源存储后端）
 
-在基础配置的基础上，添加 `rest.listen_addr` 和 `resource` 部分：
+下方展示 RBS 的最终完整配置，供后续步骤参考。请先完成 2.7.1 的基础配置；待 2.9 完成 openBao 初始化并取得实际 Root Token 后，再按照 2.9.5 的说明修改现有配置，使其包含 `rest.listen_addr` 和 `resource` 部分。不要将下方内容直接追加到配置文件末尾：
 
 ```yaml
 rest:
   listen_addr: "127.0.0.1:6666"   # 请在实际部署时更改为 "0.0.0.0:6666" 并配置防火墙策略
+  https:
+    enabled: false
 attestation:
   backends:
     gta:
@@ -313,10 +321,10 @@ sudo dnf install ./openbao_2.6.1_linux_arm64.rpm
 
 #### 2.9.2 配置 openBao
 
-编辑配置文件，禁用 HTTPS，启用 HTTP（本机访问）：
+默认使用 `vi` 编辑配置文件，禁用 HTTPS，启用 HTTP（本机访问）；也可按个人习惯改用 `vim` 或 `nano`：
 
 ```bash
-nano /etc/openbao/openbao.hcl
+vi /etc/openbao/openbao.hcl
 ```
 
 修改后的文件内容如下：
@@ -385,9 +393,34 @@ bao operator unseal 1SMpSQSIIVEBuk1BhGZO3tdg8r+ENtl1vZi5VwAqlQyo  # Unseal Key 2
 bao operator unseal BUwiJEAWSzFXyhRIoyoiHapjwYI5I6JlRVKxn3wMOn2T  # Unseal Key 3
 ```
 
-> **重要**：将 Root Token（如 `s.l3J24O59v2NkrQ8fli7u5rEP`）填入 `/etc/rbs/rbs.yaml` 的 `resource.backends.vault.token` 字段中。
+> **重要**：妥善保存 Root Token。下一步需要使用该 Token 配置 RBS 的 resource backend。
 
-#### 2.9.5 登录并启用 KV 存储
+#### 2.9.5 配置 RBS Resource 存储后端
+
+openBao 初始化并解封后，回到 `/etc/rbs/rbs.yaml`，在 2.7.1 的基础配置上继续修改。不要把下方配置直接追加到文件末尾；如果相关字段已经存在，请修改其值，并确保最终配置结构与 2.7.2 的完整示例一致。
+
+默认使用 `vi` 打开配置文件；也可按个人习惯改用 `vim` 或 `nano`：
+
+```bash
+sudo vi /etc/rbs/rbs.yaml
+```
+
+确认配置中包含以下 `resource` 部分，并将`url`替换为实际openbao运行地址（HTTP或HTTPS），`<OPENBAO_ROOT_TOKEN>` 替换为 `bao operator init` 生成的实际 Root Token：
+
+```yaml
+resource:
+  default_provider: vault
+  backends:
+    vault:
+      type: vault
+      url: "http://127.0.0.1:8200"
+      token: "<OPENBAO_ROOT_TOKEN>"
+      mount_path: "secret"
+```
+
+> **注意**：这里只列出需要在此步骤确认的字段，不代表完整的 `rbs.yaml`。请保留 2.7.1 中已有的 `rest`、`auth` 和 `attestation` 配置。
+
+#### 2.9.6 登录并启用 KV 存储
 
 ```bash
 # 使用 Root Token 登录
@@ -524,10 +557,10 @@ sed -i 's|ccel_data_path|boot_log_file_path|' /etc/attestation_agent/agent_confi
 
 #### 4.2.2 配置项说明
 
-编辑配置文件：
+默认使用 `vi` 编辑配置文件；也可按个人习惯改用 `vim` 或 `nano`：
 
 ```bash
-nano /etc/attestation_agent/agent_config.yaml
+vi /etc/attestation_agent/agent_config.yaml
 ```
 
 需要关注的关键配置项：
@@ -535,12 +568,15 @@ nano /etc/attestation_agent/agent_config.yaml
 | 配置项 | 说明 | 适配方法 |
 |--------|------|----------|
 | `server` 部分 | GTA-Server 地址 | 改为对应 HTTP 地址（如 `http://192.168.1.1:8080`）；若 GTA 启用了 HTTPS，需导入 CA 证书 |
-| `plugins.enabled` | 各 attester 插件开关 | 除所需的（如 `cca`）外，其余保持 `false` |
+| `plugins` 中 `name: "cca"` 的条目 | 硬件 CCA attester 插件配置 | 硬件 CCA：`enabled: true`；virtCCA：`enabled: false` |
+| `plugins` 中 `name: "virt_cca"` 的条目 | virtCCA attester 插件配置 | virtCCA：`enabled: true`；硬件 CCA：`enabled: false` |
 | `boot_log_file_path` | 启动日志路径（原 `ccel_data_path`） | 通常保持默认值 |
 
 > **适配要点**：
 > - `server` 部分的地址必须指向 GTA-Server（不是 RBS），端口默认为 `8080`。
-> - 如果你使用 vCCA 而非硬件 CCA，将 `plugins.enabled` 中的 `virt_cca` 设为 `true`，`cca` 设为 `false`。
+> - 使用硬件 CCA 时，将 `plugins` 列表中 `name: "cca"` 条目的 `enabled` 设为 `true`，并将 `name: "virt_cca"` 条目的 `enabled` 设为 `false`。
+> - 使用 virtCCA 时，将 `plugins` 列表中 `name: "virt_cca"` 条目的 `enabled` 设为 `true`，并将 `name: "cca"` 条目的 `enabled` 设为 `false`。
+> - 硬件 CCA 与 virtCCA 插件不要同时启用；其他不使用的 attester 插件也应保持 `false`。
 > - 如果 GTA-Server 启用了 HTTPS，需要在 agent 中配置 CA 证书路径，使 agent 信任 GTA 的证书。
 
 ### 4.3 使能 CCA（仅硬件 CCA 需要执行）
@@ -577,9 +613,9 @@ curl -X GET ${RBS_SERVER}/rbs/v0/challenge
 ### 4.5 准备 attester 密钥并测试 RBS 接口
 
 ```bash
-# 1. 生成 attester 密钥对（用于签名 evidence）
-openssl genrsa -out attester.key 4096
-openssl pkey -in attester.key -pubout -out attester.pub
+# 1. 生成 attester 密钥对（公钥绑定到 evidence，私钥用于处理返回的资源）
+openssl ecparam -name prime256v1 -genkey -out attester.key
+openssl ec -in attester.key -pubout -out attester.pub
 
 # 2. 准备一次性 nonce
 rbc-cli -b ${RBS_SERVER} challenge > nonce
@@ -604,7 +640,7 @@ rbc-cli -b ${RBS_SERVER} get-resource \
 | 步骤 | 说明 |
 |------|------|
 | `challenge` | 从 RBS 获取一次性随机数（nonce） |
-| `collect-evidence` | 采集 TEE 证据并签名，输出 evidence |
-| `get-resource` | 提交 evidence 至 RBS，通过验证后获取资源 |
+| `collect-evidence` | 采集 TEE 证据并绑定 attester 公钥，输出 evidence |
+| `get-resource` | 提交 evidence 至 RBS，通过验证后使用对应私钥处理返回的资源 |
 
 > **验证成功**：如果 `get-resource` 返回了你在 [3.3](#33-在-openbao-中写入秘密) 中写入的秘密内容，说明整个证明链路正常工作。接下来请按照 [使用手册](usage_guide.md) 进行 OpenClaw-CCA 的完整部署。
