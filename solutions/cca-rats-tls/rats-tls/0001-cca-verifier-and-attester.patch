@@ -1,0 +1,1802 @@
+From 5512c0f5cc775b1caaa793ed4dd80068966d9ef5 Mon Sep 17 00:00:00 2001
+From: ryk <renjunkai1@h-partners.com>
+Date: Tue, 23 Jun 2026 09:48:48 +0800
+Subject: [PATCH 1/2] cca verifier and attester
+
+---
+ CMakeLists.txt                                |   6 +-
+ src/CMakeLists.txt                            |   3 +-
+ src/api/rats_tls_init.c                       |   8 +
+ src/attesters/CMakeLists.txt                  |   4 +
+ src/attesters/cca/CMakeLists.txt              |  14 +
+ src/attesters/cca/cca_attester.h              |  13 +
+ src/attesters/cca/cleanup.c                   |   7 +
+ src/attesters/cca/collect_evidence.c          | 126 +++++
+ src/attesters/cca/init.c                      |  11 +
+ src/attesters/cca/main.c                      |  29 +
+ src/attesters/cca/pre_init.c                  |  20 +
+ src/core/dice.c                               |  56 +-
+ src/core/rtls_core_generate_certificate.c     |  19 +-
+ src/include/internal/dice.h                   |   9 +-
+ src/include/rats-tls/api.h                    |   4 +-
+ src/include/rats-tls/attester.h               |   1 +
+ src/include/rats-tls/cca.h                    |  53 ++
+ src/include/rats-tls/cert.h                   |   6 +
+ src/include/rats-tls/err.h                    |   1 +
+ src/include/rats-tls/tls_wrapper.h            |   8 +
+ src/include/rats-tls/verifier.h               |   1 +
+ ...tls_wrapper_verify_certificate_extension.c |  37 ++
+ src/tls_wrappers/nulltls/negotiate.c          |   6 +-
+ src/tls_wrappers/openssl/CMakeLists.txt       |   3 +
+ src/tls_wrappers/openssl/get_nonce.c          |  28 +
+ src/tls_wrappers/openssl/main.c               |   6 +
+ src/tls_wrappers/openssl/negotiate.c          |  15 +
+ src/tls_wrappers/openssl/un_negotiate.c       |  32 +-
+ src/verifiers/CMakeLists.txt                  |   4 +
+ src/verifiers/cca/CMakeLists.txt              |  16 +
+ src/verifiers/cca/cca_verifier.h              |  13 +
+ src/verifiers/cca/cleanup.c                   |  14 +
+ src/verifiers/cca/init.c                      |  14 +
+ src/verifiers/cca/main.c                      |  29 +
+ src/verifiers/cca/pre_init.c                  |   7 +
+ src/verifiers/cca/trust_anchors.h             |  45 ++
+ src/verifiers/cca/verify_evidence.c           | 504 ++++++++++++++++++
+ 37 files changed, 1163 insertions(+), 9 deletions(-)
+ create mode 100644 src/attesters/cca/CMakeLists.txt
+ create mode 100644 src/attesters/cca/cca_attester.h
+ create mode 100644 src/attesters/cca/cleanup.c
+ create mode 100644 src/attesters/cca/collect_evidence.c
+ create mode 100644 src/attesters/cca/init.c
+ create mode 100644 src/attesters/cca/main.c
+ create mode 100644 src/attesters/cca/pre_init.c
+ create mode 100644 src/include/rats-tls/cca.h
+ create mode 100644 src/tls_wrappers/openssl/get_nonce.c
+ create mode 100644 src/verifiers/cca/CMakeLists.txt
+ create mode 100644 src/verifiers/cca/cca_verifier.h
+ create mode 100644 src/verifiers/cca/cleanup.c
+ create mode 100644 src/verifiers/cca/init.c
+ create mode 100644 src/verifiers/cca/main.c
+ create mode 100644 src/verifiers/cca/pre_init.c
+ create mode 100644 src/verifiers/cca/trust_anchors.h
+ create mode 100644 src/verifiers/cca/verify_evidence.c
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a6585fb..3f8c628 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -23,7 +23,7 @@ option(BUILD_FUZZ "Use lib-fuzzer to fuzz the code, default OFF" OFF)
+ 
+ # Define build mode
+ set(RATS_TLS_BUILD_MODE "host"
+-    CACHE STRING "Select build mode for rats-tls(normal|occlum|sgx)")
++    CACHE STRING "Select build mode for rats-tls(host|occlum|sgx|tdx|cca)")
+ 
+ # Print build mode
+ message(STATUS "Build Mode: ${RATS_TLS_BUILD_MODE}")
+@@ -38,6 +38,7 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+ #  occlum: OCCLUM
+ #  sgx: SGX
+ #  tdx: TDX
++#  cca: Arm CCA
+ if(RATS_TLS_BUILD_MODE STREQUAL "host")
+     set(HOST 1)
+     add_definitions(-DHOST)
+@@ -57,6 +58,9 @@ elseif(RATS_TLS_BUILD_MODE STREQUAL "sgx")
+ elseif(RATS_TLS_BUILD_MODE STREQUAL "tdx")
+     set(TDX 1)
+     add_definitions(-DTDX)
++elseif(RATS_TLS_BUILD_MODE STREQUAL "cca")
++    set(CCA 1)
++    add_definitions(-DCCA)
+ else()
+     message(FATAL_ERROR "Invalid build mode!")
+ endif()
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index de69760..76d5c40 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -98,7 +98,7 @@ if(SGX)
+     add_dependencies(${RTLS_LIB} ${DEPEND_TRUSTED_LIBS})
+ else()
+     add_library(${RTLS_LIB} SHARED ${SOURCES})
+-    target_link_libraries(${RTLS_LIB} ${RATS_TLS_LDFLAGS} cbor)
++    target_link_libraries(${RTLS_LIB} PRIVATE ${RATS_TLS_LDFLAGS} cbor)
+     set_target_properties(${RTLS_LIB} PROPERTIES VERSION ${VERSION} SOVERSION ${VERSION_MAJOR})
+ endif()
+ 
+@@ -118,6 +118,7 @@ set(RTLS_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/rats-tls/api.h
+                        ${CMAKE_CURRENT_SOURCE_DIR}/include/rats-tls/sgx.h
+                        ${CMAKE_CURRENT_SOURCE_DIR}/include/rats-tls/tls_wrapper.h
+                        ${CMAKE_CURRENT_SOURCE_DIR}/include/rats-tls/hash.h
++                       ${CMAKE_CURRENT_SOURCE_DIR}/include/rats-tls/cca.h
+                        )
+ install(DIRECTORY DESTINATION ${RATS_TLS_INSTALL_INCLUDE_PATH})
+ install(FILES ${RTLS_INCLUDE_FILES}
+diff --git a/src/api/rats_tls_init.c b/src/api/rats_tls_init.c
+index 39e64cd..64a8de4 100644
+--- a/src/api/rats_tls_init.c
++++ b/src/api/rats_tls_init.c
+@@ -121,6 +121,7 @@ rats_tls_err_t rats_tls_init(const rats_tls_conf_t *conf, rats_tls_handle *handl
+ 	if (err != RATS_TLS_ERR_NONE)
+ 		goto err_ctx;
+ 
++#ifndef CCA
+ 	/* Check whether requiring to generate TLS certificate */
+ 	if ((ctx->config.flags & RATS_TLS_CONF_FLAGS_SERVER) ||
+ 	    (ctx->config.flags & RATS_TLS_CONF_FLAGS_MUTUAL)) {
+@@ -128,6 +129,13 @@ rats_tls_err_t rats_tls_init(const rats_tls_conf_t *conf, rats_tls_handle *handl
+ 		if (err != RATS_TLS_ERR_NONE)
+ 			goto err_ctx;
+ 	}
++#else
++	if (strcmp(ctx->tls_wrapper->opts->name, "openssl")) {
++		RTLS_ERR("CCA mode requires the OpenSSL TLS wrapper\n");
++		err = RATS_TLS_ERR_INVALID;
++		goto err_ctx;
++	}
++#endif
+ 
+ 	*handle = ctx;
+ 
+diff --git a/src/attesters/CMakeLists.txt b/src/attesters/CMakeLists.txt
+index 103c8d0..a79d169 100644
+--- a/src/attesters/CMakeLists.txt
++++ b/src/attesters/CMakeLists.txt
+@@ -19,3 +19,7 @@ endif()
+ if(SGX)
+     add_subdirectory(sgx-la)
+ endif()
++
++if(CCA)
++    add_subdirectory(cca)
++endif()
+diff --git a/src/attesters/cca/CMakeLists.txt b/src/attesters/cca/CMakeLists.txt
+new file mode 100644
+index 0000000..f19cae8
+--- /dev/null
++++ b/src/attesters/cca/CMakeLists.txt
+@@ -0,0 +1,14 @@
++project(attester_cca)
++
++include_directories(${INCLUDE_DIRS})
++
++set(LIBRARY_DIRS ${CMAKE_BINARY_DIR}/src ${RATS_TLS_INSTALL_LIB_PATH})
++link_directories(${LIBRARY_DIRS})
++
++set(SOURCES cleanup.c collect_evidence.c init.c main.c pre_init.c)
++
++add_library(${PROJECT_NAME} SHARED ${SOURCES})
++target_link_libraries(${PROJECT_NAME} ${RATS_TLS_LDFLAGS} ${RTLS_LIB} pthread)
++set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${VERSION} SOVERSION ${VERSION_MAJOR})
++
++install(TARGETS ${PROJECT_NAME} DESTINATION ${RATS_TLS_INSTALL_LIBA_PATH})
+diff --git a/src/attesters/cca/cca_attester.h b/src/attesters/cca/cca_attester.h
+new file mode 100644
+index 0000000..d766180
+--- /dev/null
++++ b/src/attesters/cca/cca_attester.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#ifndef _RATS_TLS_CCA_ATTESTER_H
++#define _RATS_TLS_CCA_ATTESTER_H
++
++#define CCA_TSM_REPORT_DIR "/sys/kernel/config/tsm/report/report0"
++#define CCA_TSM_INBLOB CCA_TSM_REPORT_DIR "/inblob"
++#define CCA_TSM_OUTBLOB CCA_TSM_REPORT_DIR "/outblob"
++#define CCA_TSM_AUXBLOB CCA_TSM_REPORT_DIR "/auxblob"
++
++#define CCA_EVIDENCE_CAPACITY 8192U
++#define CCA_CHALLENGE_SIZE 32U
++
++#endif
+diff --git a/src/attesters/cca/cleanup.c b/src/attesters/cca/cleanup.c
+new file mode 100644
+index 0000000..ffa3ce5
+--- /dev/null
++++ b/src/attesters/cca/cleanup.c
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <rats-tls/attester.h>
++
++enclave_attester_err_t cca_attester_cleanup(__attribute__((unused)) enclave_attester_ctx_t *ctx)
++{
++	return ENCLAVE_ATTESTER_ERR_NONE;
++}
+diff --git a/src/attesters/cca/collect_evidence.c b/src/attesters/cca/collect_evidence.c
+new file mode 100644
+index 0000000..dfce041
+--- /dev/null
++++ b/src/attesters/cca/collect_evidence.c
+@@ -0,0 +1,126 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <errno.h>
++#include <fcntl.h>
++#include <pthread.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++#include <rats-tls/attester.h>
++#include <rats-tls/log.h>
++#include "cca_attester.h"
++
++static pthread_mutex_t cca_report_lock = PTHREAD_MUTEX_INITIALIZER;
++
++static int write_all(int fd, const uint8_t *data, size_t size)
++{
++	while (size) {
++		ssize_t written = write(fd, data, size);
++		if (written < 0) {
++			if (errno == EINTR)
++				continue;
++			return -1;
++		}
++		data += written;
++		size -= (size_t)written;
++	}
++	return 0;
++}
++
++static int read_bounded_file(const char *path, uint8_t *buffer, size_t capacity, size_t *size)
++{
++	int fd = open(path, O_RDONLY);
++	if (fd < 0)
++		return -1;
++
++	size_t total = 0;
++	while (total < capacity) {
++		ssize_t got = read(fd, buffer + total, capacity - total);
++		if (got < 0) {
++			if (errno == EINTR)
++				continue;
++			close(fd);
++			return -1;
++		}
++		if (got == 0)
++			break;
++		total += (size_t)got;
++	}
++
++	uint8_t extra;
++	if (total == capacity && read(fd, &extra, 1) > 0) {
++		close(fd);
++		return -1;
++	}
++	close(fd);
++
++	if (total == 0)
++		return -1;
++	*size = total;
++	return 0;
++}
++
++enclave_attester_err_t cca_collect_evidence(
++	__attribute__((unused)) enclave_attester_ctx_t *ctx, attestation_evidence_t *evidence,
++	__attribute__((unused)) rats_tls_cert_algo_t algo, uint8_t *hash, uint32_t hash_len)
++{
++	if (!evidence || !hash || hash_len != CCA_CHALLENGE_SIZE)
++		return -ENCLAVE_ATTESTER_ERR_INVALID;
++
++	int ret = pthread_mutex_lock(&cca_report_lock);
++	if (ret)
++		return -ENCLAVE_ATTESTER_ERR_UNKNOWN;
++
++	enclave_attester_err_t result = -ENCLAVE_ATTESTER_ERR_INVALID;
++	int fd = open(CCA_TSM_INBLOB, O_WRONLY | O_TRUNC);
++	if (fd < 0) {
++		RTLS_ERR("failed to open %s: %s\n", CCA_TSM_INBLOB, strerror(errno));
++		goto out;
++	}
++	if (write_all(fd, hash, hash_len)) {
++		RTLS_ERR("failed to write CCA challenge: %s\n", strerror(errno));
++		close(fd);
++		goto out;
++	}
++	if (fsync(fd) && errno != EINVAL) {
++		RTLS_ERR("failed to flush CCA challenge: %s\n", strerror(errno));
++		close(fd);
++		goto out;
++	}
++	close(fd);
++
++	uint8_t token[CCA_EVIDENCE_CAPACITY];
++	uint8_t cert[CCA_EVIDENCE_CAPACITY];
++	size_t token_len = 0;
++	size_t cert_len = 0;
++	if (read_bounded_file(CCA_TSM_OUTBLOB, token, sizeof(token), &token_len) ||
++	    read_bounded_file(CCA_TSM_AUXBLOB, cert, sizeof(cert), &cert_len)) {
++		RTLS_ERR("failed to read CCA token or device certificate\n");
++		goto out;
++	}
++
++	const size_t header_size = sizeof(uint64_t) * 2;
++	if (token_len > UINT64_MAX || cert_len > UINT64_MAX ||
++	    header_size + token_len + cert_len > sizeof(evidence->cca.report)) {
++		RTLS_ERR("CCA evidence exceeds %zu-byte capacity\n", sizeof(evidence->cca.report));
++		goto out;
++	}
++
++	uint64_t token_len_u64 = (uint64_t)token_len;
++	uint64_t cert_len_u64 = (uint64_t)cert_len;
++	uint8_t *cursor = evidence->cca.report;
++	memcpy(cursor, &token_len_u64, sizeof(token_len_u64));
++	cursor += sizeof(token_len_u64);
++	memcpy(cursor, token, token_len);
++	cursor += token_len;
++	memcpy(cursor, &cert_len_u64, sizeof(cert_len_u64));
++	cursor += sizeof(cert_len_u64);
++	memcpy(cursor, cert, cert_len);
++
++	evidence->cca.report_len = (uint32_t)(header_size + token_len + cert_len);
++	snprintf(evidence->type, sizeof(evidence->type), "cca");
++	result = ENCLAVE_ATTESTER_ERR_NONE;
++out:
++	pthread_mutex_unlock(&cca_report_lock);
++	return result;
++}
+diff --git a/src/attesters/cca/init.c b/src/attesters/cca/init.c
+new file mode 100644
+index 0000000..84333f8
+--- /dev/null
++++ b/src/attesters/cca/init.c
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <rats-tls/attester.h>
++
++enclave_attester_err_t cca_attester_init(enclave_attester_ctx_t *ctx,
++					 __attribute__((unused)) rats_tls_cert_algo_t algo)
++{
++	if (!ctx)
++		return -ENCLAVE_ATTESTER_ERR_INVALID;
++	ctx->attester_private = NULL;
++	return ENCLAVE_ATTESTER_ERR_NONE;
++}
+diff --git a/src/attesters/cca/main.c b/src/attesters/cca/main.c
+new file mode 100644
+index 0000000..4bcc6f1
+--- /dev/null
++++ b/src/attesters/cca/main.c
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <rats-tls/attester.h>
++#include <rats-tls/log.h>
++
++extern enclave_attester_err_t enclave_attester_register(enclave_attester_opts_t *);
++extern enclave_attester_err_t cca_attester_pre_init(void);
++extern enclave_attester_err_t cca_attester_init(enclave_attester_ctx_t *, rats_tls_cert_algo_t);
++extern enclave_attester_err_t cca_collect_evidence(enclave_attester_ctx_t *,
++						   attestation_evidence_t *,
++						   rats_tls_cert_algo_t, uint8_t *, uint32_t);
++extern enclave_attester_err_t cca_attester_cleanup(enclave_attester_ctx_t *);
++
++static enclave_attester_opts_t cca_attester_opts = {
++	.api_version = ENCLAVE_ATTESTER_API_VERSION_DEFAULT,
++	.flags = ENCLAVE_ATTESTER_OPTS_FLAGS_CCA_GUEST,
++	.name = "cca",
++	.priority = 45,
++	.pre_init = cca_attester_pre_init,
++	.init = cca_attester_init,
++	.collect_evidence = cca_collect_evidence,
++	.cleanup = cca_attester_cleanup,
++};
++
++void __attribute__((constructor)) libattester_cca_init(void)
++{
++	enclave_attester_err_t err = enclave_attester_register(&cca_attester_opts);
++	if (err != ENCLAVE_ATTESTER_ERR_NONE)
++		RTLS_DEBUG("failed to register attester 'cca' %#x\n", err);
++}
+diff --git a/src/attesters/cca/pre_init.c b/src/attesters/cca/pre_init.c
+new file mode 100644
+index 0000000..da8f2ba
+--- /dev/null
++++ b/src/attesters/cca/pre_init.c
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <unistd.h>
++#include <rats-tls/attester.h>
++#include <rats-tls/log.h>
++#include "cca_attester.h"
++
++enclave_attester_err_t cca_attester_pre_init(void)
++{
++#ifndef __aarch64__
++	RTLS_DEBUG("CCA attestation is only available on AArch64\n");
++	return -ENCLAVE_ATTESTER_ERR_CPU_UNSUPPORTED;
++#else
++	if (access(CCA_TSM_INBLOB, W_OK) || access(CCA_TSM_OUTBLOB, R_OK) ||
++	    access(CCA_TSM_AUXBLOB, R_OK)) {
++		RTLS_DEBUG("CCA TSM report interface is unavailable\n");
++		return -ENCLAVE_ATTESTER_ERR_NO_TOOL;
++	}
++	return ENCLAVE_ATTESTER_ERR_NONE;
++#endif
++}
+diff --git a/src/core/dice.c b/src/core/dice.c
+index 59b3158..87e8548 100644
+--- a/src/core/dice.c
++++ b/src/core/dice.c
+@@ -26,6 +26,8 @@ uint64_t tag_of_evidence_type(const char *type)
+ 		return OCBR_TAG_EVIDENCE_SEV;
+ 	} else if (!strcmp(type, "csv")) {
+ 		return OCBR_TAG_EVIDENCE_CSV;
++	} else if (!strcmp(type, "cca")) {
++		return OCBR_TAG_EVIDENCE_CCA;
+ 	}
+ 
+ 	RTLS_FATAL("Unhandled evidence type '%s'\n", type);
+@@ -60,6 +62,9 @@ const uint8_t *evidence_get_raw_as_ref(const attestation_evidence_t *evidence, s
+ 	} else if (!strcmp(evidence->type, "csv")) {
+ 		data = (const uint8_t *)&evidence->csv.report;
+ 		size = evidence->csv.report_len;
++	} else if (!strcmp(evidence->type, "cca")) {
++		data = (const uint8_t *)&evidence->cca.report;
++		size = evidence->cca.report_len;
+ 	} else {
+ 		RTLS_FATAL("Unhandled evidence type '%s'\n", evidence->type);
+ 		*size_out = 0;
+@@ -147,6 +152,10 @@ int evidence_from_raw(const uint8_t *data, size_t size, uint64_t tag,
+ 		memcpy(evidence->type, "csv", sizeof("csv"));
+ 		memcpy((uint8_t *)&evidence->csv.report, data, size);
+ 		evidence->csv.report_len = size;
++	} else if (tag == OCBR_TAG_EVIDENCE_CCA) {
++		memcpy(evidence->type, "cca", sizeof("cca"));
++		memcpy((uint8_t *)&evidence->cca.report, data, size);
++		evidence->cca.report_len = size;
+ 	}
+ 
+ 	return 0;
+@@ -201,6 +210,9 @@ err:
+ 
+ enclave_attester_err_t
+ dice_generate_claims_buffer(hash_algo_t pubkey_hash_algo, const uint8_t *pubkey_hash,
++#ifdef CCA
++			    const uint8_t *nonce, size_t nonce_size,
++#endif
+ 			    const claim_t *custom_claims, size_t custom_claims_length,
+ 			    uint8_t **claims_buffer_out, size_t *claims_buffer_size_out)
+ {
+@@ -212,7 +224,13 @@ dice_generate_claims_buffer(hash_algo_t pubkey_hash_algo, const uint8_t *pubkey_
+ 	/* claims-buffer: { "pubkey-hash" : h'<pubkey-hash-value>', "nonce" : h'<nonce-value>'} */
+ 	/* Note that the nonce is optional, it's for per-session freshness, which we don't support it yet. */
+ 	ret = ENCLAVE_ATTESTER_ERR_NO_MEM;
+-	root = cbor_new_definite_map(1 + custom_claims_length);
++	root = cbor_new_definite_map(
++#ifdef CCA
++		2 +
++#else
++		1 +
++#endif
++		custom_claims_length);
+ 	if (!root)
+ 		goto err;
+ 
+@@ -233,6 +251,14 @@ dice_generate_claims_buffer(hash_algo_t pubkey_hash_algo, const uint8_t *pubkey_
+ 	free(pubkey_hash_value_buffer);
+ 	pubkey_hash_value_buffer = NULL;
+ 
++#ifdef CCA
++	if (!nonce || nonce_size == 0 ||
++	    !cbor_map_add(root, (struct cbor_pair) {
++					.key = cbor_move(cbor_build_string(CLAIM_NONCE)),
++					.value = cbor_move(cbor_build_bytestring(nonce, nonce_size)) }))
++		goto err;
++#endif
++
+ 	/* Add all user-defined claims to map */
+ 	ret = ENCLAVE_ATTESTER_ERR_NO_MEM;
+ 	for (size_t i = 0; i < custom_claims_length; i++) {
+@@ -726,6 +752,9 @@ err:
+ enclave_verifier_err_t
+ dice_parse_claims_buffer(const uint8_t *claims_buffer, size_t claims_buffer_size,
+ 			 hash_algo_t *pubkey_hash_algo_out, uint8_t *pubkey_hash_out,
++#ifdef CCA
++			 uint8_t *nonce_out, size_t *nonce_size_out,
++#endif
+ 			 claim_t **custom_claims_out, size_t *custom_claims_length_out)
+ {
+ 	enclave_verifier_err_t ret;
+@@ -755,6 +784,9 @@ dice_parse_claims_buffer(const uint8_t *claims_buffer, size_t claims_buffer_size
+ 
+ 	{
+ 		bool found_pubkey_hash = false;
++#ifdef CCA
++		bool found_nonce = false;
++#endif
+ 
+ 		/* Get claims from claims buffer */
+ 		claim_t claims[cbor_map_size(root)];
+@@ -791,6 +823,20 @@ dice_parse_claims_buffer(const uint8_t *claims_buffer, size_t claims_buffer_size
+ 				continue;
+ 			}
+ 
++#ifdef CCA
++			if (key_length == sizeof(CLAIM_NONCE) - 1 &&
++			    !strncmp((char *)key_handle, CLAIM_NONCE, key_length)) {
++				if (!nonce_out || !nonce_size_out || value_length > *nonce_size_out) {
++					ret = ENCLAVE_VERIFIER_ERR_INVALID;
++					goto err_claims;
++				}
++				memcpy(nonce_out, value_handle, value_length);
++				*nonce_size_out = value_length;
++				found_nonce = true;
++				continue;
++			}
++#endif
++
+ 			/* Put user-defined custom claims into the custom_claims list. */
+ 			claim_t *claim = &claims[count_claims];
+ 			/* NOTE: The cbor_string_handle(key) returns a non-null terminated string. And the
+@@ -824,6 +870,14 @@ dice_parse_claims_buffer(const uint8_t *claims_buffer, size_t claims_buffer_size
+ 			goto err_claims;
+ 		}
+ 
++#ifdef CCA
++		if (!found_nonce) {
++			RTLS_ERR("failed to find claim '%s'\n", CLAIM_NONCE);
++			ret = ENCLAVE_VERIFIER_ERR_INVALID;
++			goto err_claims;
++		}
++#endif
++
+ 		custom_claims = malloc(count_claims * sizeof(claim_t));
+ 		if (!custom_claims) {
+ 			ret = ENCLAVE_VERIFIER_ERR_NO_MEM;
+diff --git a/src/core/rtls_core_generate_certificate.c b/src/core/rtls_core_generate_certificate.c
+index b20db41..0d34ffc 100644
+--- a/src/core/rtls_core_generate_certificate.c
++++ b/src/core/rtls_core_generate_certificate.c
+@@ -21,9 +21,11 @@ rats_tls_err_t rtls_core_generate_certificate(rtls_core_context_t *ctx)
+ 	    !ctx->crypto_wrapper->opts->gen_cert)
+ 		return -RATS_TLS_ERR_INVALID;
+ 
++#ifndef CCA
+ 	/* Avoid re-generation of TLS certificates */
+ 	if (ctx->flags & RATS_TLS_CTX_FLAGS_CERT_CREATED)
+ 		return RATS_TLS_ERR_NONE;
++#endif
+ 
+ 	/* Check whether the specified algorithm is supported.
+ 	 *
+@@ -67,11 +69,24 @@ rats_tls_err_t rtls_core_generate_certificate(rtls_core_context_t *ctx)
+ 	uint8_t *claims_buffer = NULL;
+ 	size_t claims_buffer_size = 0;
+ 
++#ifdef CCA
++	uint8_t nonce[64];
++	size_t nonce_size = sizeof(nonce);
++	if (!ctx->tls_wrapper->opts->get_nonce ||
++	    ctx->tls_wrapper->opts->get_nonce(ctx->tls_wrapper, true, nonce, &nonce_size) !=
++		    TLS_WRAPPER_ERR_NONE)
++		return -RATS_TLS_ERR_INVALID;
++#endif
++
+ 	/* Using sha256 hash of claims_buffer as user data */
+ 	RTLS_DEBUG("fill evidence user-data field with sha256 of claims_buffer\n");
+ 	/* Generate claims_buffer */
+ 	enclave_attester_err_t a_ret = dice_generate_claims_buffer(
+-		HASH_ALGO_SHA256, hash, ctx->config.custom_claims, ctx->config.custom_claims_length,
++		HASH_ALGO_SHA256, hash,
++#ifdef CCA
++		nonce, nonce_size,
++#endif
++		ctx->config.custom_claims, ctx->config.custom_claims_length,
+ 		&claims_buffer, &claims_buffer_size);
+ 	if (a_ret != ENCLAVE_ATTESTER_ERR_NONE) {
+ 		RTLS_DEBUG("generate claims_buffer failed. a_ret: %#x\n", a_ret);
+@@ -191,8 +206,10 @@ rats_tls_err_t rtls_core_generate_certificate(rtls_core_context_t *ctx)
+ 	if (cert_info.cert_buf)
+ 		free(cert_info.cert_buf);
+ 
++#ifndef CCA
+ 	/* Prevent from re-generation of TLS certificate */
+ 	ctx->flags |= RATS_TLS_CTX_FLAGS_CERT_CREATED;
++#endif
+ 
+ 	return RATS_TLS_ERR_NONE;
+ }
+diff --git a/src/include/internal/dice.h b/src/include/internal/dice.h
+index ef1c220..666d3e6 100644
+--- a/src/include/internal/dice.h
++++ b/src/include/internal/dice.h
+@@ -21,8 +21,9 @@
+ #define OCBR_TAG_EVIDENCE_SEV_SNP		  0x1a7504
+ #define OCBR_TAG_EVIDENCE_SEV			  0x1a7505
+ #define OCBR_TAG_EVIDENCE_CSV			  0x1a7506
++#define OCBR_TAG_EVIDENCE_CCA			  0x1a7507
+ #define OCBR_TAG_EVIDENCE_MIN			  OCBR_TAG_EVIDENCE_INTEL_TEE_QUOTE
+-#define OCBR_TAG_EVIDENCE_MAX			  OCBR_TAG_EVIDENCE_CSV
++#define OCBR_TAG_EVIDENCE_MAX			  OCBR_TAG_EVIDENCE_CCA
+ 
+ #define CLAIM_PUBLIC_KEY_HASH "pubkey-hash"
+ #define CLAIM_NONCE	      "nonce"
+@@ -39,6 +40,9 @@ int evidence_from_raw(const uint8_t *data, size_t size, uint64_t tag,
+ 
+ enclave_attester_err_t
+ dice_generate_claims_buffer(hash_algo_t pubkey_hash_algo, const uint8_t *pubkey_hash,
++#ifdef CCA
++			    const uint8_t *nonce, size_t nonce_size,
++#endif
+ 			    const claim_t *custom_claims, size_t custom_claims_length,
+ 			    uint8_t **claims_buffer_out, size_t *claims_buffer_size_out);
+ 
+@@ -65,6 +69,9 @@ dice_parse_endorsements_buffer_with_tag(const char *type, const uint8_t *endorse
+ enclave_verifier_err_t
+ dice_parse_claims_buffer(const uint8_t *claims_buffer, size_t claims_buffer_size,
+ 			 hash_algo_t *pubkey_hash_algo_out, uint8_t *pubkey_hash_out,
++#ifdef CCA
++			 uint8_t *nonce_out, size_t *nonce_size_out,
++#endif
+ 			 claim_t **custom_claims_out, size_t *custom_claims_length_out);
+ 
+ #endif
+diff --git a/src/include/rats-tls/api.h b/src/include/rats-tls/api.h
+index 557872a..9e5ea93 100644
+--- a/src/include/rats-tls/api.h
++++ b/src/include/rats-tls/api.h
+@@ -12,6 +12,7 @@
+ #include <stddef.h>
+ #include <rats-tls/err.h>
+ #include <rats-tls/claim.h>
++#include <rats-tls/cca.h>
+ 
+ #define TLS_TYPE_NAME_SIZE		32
+ #define ENCLAVE_ATTESTER_TYPE_NAME_SIZE 32
+@@ -109,7 +110,7 @@ typedef struct ehd {
+ 	char *unhashed;
+ } ehd_t;
+ 
+-typedef enum { SGX_ECDSA = 1, TDX_ECDSA, CSV } enclave_evidence_type_t;
++typedef enum { SGX_ECDSA = 1, TDX_ECDSA, CSV, CCA_EVIDENCE } enclave_evidence_type_t;
+ 
+ typedef struct rtls_evidence {
+ 	enclave_evidence_type_t type;
+@@ -122,6 +123,7 @@ typedef struct rtls_evidence {
+ 		rtls_sgx_evidence_t sgx;
+ 		rtls_tdx_evidence_t tdx;
+ 		rtls_csv_evidence_t csv;
++		rtls_cca_evidence_t cca;
+ 	};
+ } rtls_evidence_t;
+ 
+diff --git a/src/include/rats-tls/attester.h b/src/include/rats-tls/attester.h
+index e73472a..4de62c1 100644
+--- a/src/include/rats-tls/attester.h
++++ b/src/include/rats-tls/attester.h
+@@ -25,6 +25,7 @@
+ #define ENCLAVE_ATTESTER_OPTS_FLAGS_SEV_GUEST	(ENCLAVE_ATTESTER_OPTS_FLAGS_TDX_GUEST << 1)
+ #define ENCLAVE_ATTESTER_OPTS_FLAGS_SNP_GUEST	(ENCLAVE_ATTESTER_OPTS_FLAGS_SEV_GUEST << 1)
+ #define ENCLAVE_ATTESTER_OPTS_FLAGS_CSV_GUEST	(ENCLAVE_ATTESTER_OPTS_FLAGS_SNP_GUEST << 1)
++#define ENCLAVE_ATTESTER_OPTS_FLAGS_CCA_GUEST	(ENCLAVE_ATTESTER_OPTS_FLAGS_CSV_GUEST << 1)
+ 
+ #define ENCLAVE_ATTESTER_FLAGS_DEFAULT 0
+ 
+diff --git a/src/include/rats-tls/cca.h b/src/include/rats-tls/cca.h
+new file mode 100644
+index 0000000..e76ed01
+--- /dev/null
++++ b/src/include/rats-tls/cca.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#ifndef _RATS_TLS_CCA_H
++#define _RATS_TLS_CCA_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#define RATS_TLS_CCA_REM_COUNT 4
++#define RATS_TLS_CCA_CHALLENGE_SIZE 32
++
++typedef struct {
++	const uint8_t *data;
++	size_t size;
++} rtls_cca_buffer_t;
++
++typedef struct {
++	rtls_cca_buffer_t component_type;
++	rtls_cca_buffer_t measurement;
++	rtls_cca_buffer_t version;
++	rtls_cca_buffer_t signer_id;
++	rtls_cca_buffer_t hash_algorithm;
++} rtls_cca_sw_component_t;
++
++typedef struct {
++	rtls_cca_buffer_t profile;
++	rtls_cca_buffer_t challenge;
++	rtls_cca_buffer_t implementation_id;
++	rtls_cca_buffer_t instance_id;
++	rtls_cca_buffer_t config;
++	uint16_t lifecycle;
++	const rtls_cca_sw_component_t *software_components;
++	size_t software_component_count;
++	rtls_cca_buffer_t verification_service;
++	rtls_cca_buffer_t hash_algorithm;
++} rtls_cca_platform_claims_t;
++
++typedef struct {
++	rtls_cca_buffer_t challenge;
++	rtls_cca_buffer_t profile;
++	rtls_cca_buffer_t personalization_value;
++	rtls_cca_buffer_t initial_measurement;
++	rtls_cca_buffer_t extensible_measurements[RATS_TLS_CCA_REM_COUNT];
++	rtls_cca_buffer_t hash_algorithm;
++	rtls_cca_buffer_t realm_attestation_key;
++	rtls_cca_buffer_t realm_attestation_key_hash_algorithm;
++} rtls_cca_realm_claims_t;
++
++typedef struct {
++	rtls_cca_platform_claims_t platform;
++	rtls_cca_realm_claims_t realm;
++} rtls_cca_evidence_t;
++
++#endif
+diff --git a/src/include/rats-tls/cert.h b/src/include/rats-tls/cert.h
+index 2706696..2c3a4e2 100644
+--- a/src/include/rats-tls/cert.h
++++ b/src/include/rats-tls/cert.h
+@@ -54,6 +54,11 @@ typedef struct {
+ 	uint32_t report_len;
+ } csv_attestation_evidence_t;
+ 
++typedef struct {
++	uint8_t report[8192];
++	uint32_t report_len;
++} cca_attestation_evidence_t;
++
+ typedef struct {
+ 	char type[ENCLAVE_ATTESTER_TYPE_NAME_SIZE];
+ 	union {
+@@ -64,6 +69,7 @@ typedef struct {
+ 		snp_attestation_evidence_t snp;
+ 		sev_attestation_evidence_t sev;
+ 		csv_attestation_evidence_t csv;
++		cca_attestation_evidence_t cca;
+ 	};
+ } attestation_evidence_t;
+ 
+diff --git a/src/include/rats-tls/err.h b/src/include/rats-tls/err.h
+index 359e8eb..c01c8ed 100644
+--- a/src/include/rats-tls/err.h
++++ b/src/include/rats-tls/err.h
+@@ -116,6 +116,7 @@ typedef enum {
+ 	TLS_WRAPPER_ERR_UNSUPPORTED_QUOTE,
+ 	TLS_WRAPPER_ERR_PRIV_KEY,
+ 	TLS_WRAPPER_ERR_CERT,
++	TLS_WRAPPER_ERR_NONCE,
+ 	TLS_WRAPPER_ERR_UNKNOWN,
+ } tls_wrapper_err_t;
+ 
+diff --git a/src/include/rats-tls/tls_wrapper.h b/src/include/rats-tls/tls_wrapper.h
+index 32ad442..d805ae0 100644
+--- a/src/include/rats-tls/tls_wrapper.h
++++ b/src/include/rats-tls/tls_wrapper.h
+@@ -36,6 +36,10 @@ typedef struct {
+ 	tls_wrapper_err_t (*use_privkey)(tls_wrapper_ctx_t *ctx, rats_tls_cert_algo_t algo,
+ 					 void *privkey_buf, size_t privkey_len);
+ 	tls_wrapper_err_t (*use_cert)(tls_wrapper_ctx_t *ctx, rats_tls_cert_info_t *cert_info);
++#ifdef CCA
++	tls_wrapper_err_t (*get_nonce)(tls_wrapper_ctx_t *ctx, bool peer, void *buf,
++				       size_t *buf_size);
++#endif
+ 	tls_wrapper_err_t (*negotiate)(tls_wrapper_ctx_t *ctx, int fd);
+ 	tls_wrapper_err_t (*transmit)(tls_wrapper_ctx_t *ctx, void *buf, size_t *buf_size);
+ 	tls_wrapper_err_t (*receive)(tls_wrapper_ctx_t *ctx, void *buf, size_t *buf_size);
+@@ -58,6 +62,10 @@ extern tls_wrapper_err_t tls_wrapper_register(const tls_wrapper_opts_t *);
+ extern tls_wrapper_err_t
+ tls_wrapper_verify_certificate_extension(tls_wrapper_ctx_t *tls_ctx, const uint8_t *pubkey_buffer,
+ 					 size_t pubkey_buffer_size, uint8_t *evidence_buffer,
++#ifdef CCA
++					 const uint8_t *nonce_buffer,
++					 size_t nonce_buffer_size,
++#endif
+ 					 size_t evidence_buffer_size, uint8_t *endorsements_buffer,
+ 					 size_t endorsements_buffer_size);
+ 
+diff --git a/src/include/rats-tls/verifier.h b/src/include/rats-tls/verifier.h
+index be891e9..df6586f 100644
+--- a/src/include/rats-tls/verifier.h
++++ b/src/include/rats-tls/verifier.h
+@@ -27,6 +27,7 @@
+ #define ENCLAVE_VERIFIER_OPTS_FLAGS_SNP		 (1 << 3)
+ #define ENCLAVE_VERIFIER_OPTS_FLAGS_SEV		 (1 << 4)
+ #define ENCLAVE_VERIFIER_OPTS_FLAGS_CSV		 (1 << 5)
++#define ENCLAVE_VERIFIER_OPTS_FLAGS_CCA		 (1 << 6)
+ 
+ typedef struct enclave_verifier_ctx enclave_verifier_ctx_t;
+ 
+diff --git a/src/tls_wrappers/api/tls_wrapper_verify_certificate_extension.c b/src/tls_wrappers/api/tls_wrapper_verify_certificate_extension.c
+index e1a70e6..5d16a79 100644
+--- a/src/tls_wrappers/api/tls_wrapper_verify_certificate_extension.c
++++ b/src/tls_wrappers/api/tls_wrapper_verify_certificate_extension.c
+@@ -18,7 +18,9 @@
+ #ifdef SGX
+ #include "sgx_report.h"
+ #endif
++#ifndef CCA
+ #include "sgx_quote_3.h"
++#endif
+ // clang-format on
+ 
+ tls_wrapper_err_t
+@@ -71,6 +73,9 @@ tls_wrapper_err_t tls_wrapper_verify_certificate_extension(
+ 	tls_wrapper_ctx_t *tls_ctx,
+ 	const uint8_t *pubkey_buffer /* in SubjectPublicKeyInfo format */,
+ 	size_t pubkey_buffer_size, uint8_t *evidence_buffer /* optional, for nullverifier */,
++#ifdef CCA
++	const uint8_t *nonce_buffer, size_t nonce_buffer_size,
++#endif
+ 	size_t evidence_buffer_size, uint8_t *endorsements_buffer /* optional */,
+ 	size_t endorsements_buffer_size)
+ {
+@@ -179,8 +184,15 @@ tls_wrapper_err_t tls_wrapper_verify_certificate_extension(
+ 	if (claims_buffer) {
+ 		hash_algo_t pubkey_hash_algo = HASH_ALGO_RESERVED;
+ 		uint8_t pubkey_hash[MAX_HASH_SIZE];
++#ifdef CCA
++		uint8_t nonce[64];
++		size_t nonce_size = sizeof(nonce);
++#endif
+ 		enclave_verifier_err_t d_ret = dice_parse_claims_buffer(
+ 			claims_buffer, claims_buffer_size, &pubkey_hash_algo, pubkey_hash,
++#ifdef CCA
++			nonce, &nonce_size,
++#endif
+ 			&custom_claims, &custom_claims_length);
+ 		free(claims_buffer);
+ 		claims_buffer = NULL;
+@@ -229,6 +241,15 @@ tls_wrapper_err_t tls_wrapper_verify_certificate_extension(
+ 			ret = TLS_WRAPPER_ERR_INVALID;
+ 			goto err;
+ 		}
++
++#ifdef CCA
++		if (!nonce_buffer || nonce_size != nonce_buffer_size ||
++		    memcmp(nonce, nonce_buffer, nonce_size)) {
++			RTLS_ERR("unmatched TLS handshake nonce in claims buffer\n");
++			ret = TLS_WRAPPER_ERR_INVALID;
++			goto err;
++		}
++#endif
+ 	}
+ 
+ 	/* Verify evidence struct via user_callback */
+@@ -236,6 +257,7 @@ tls_wrapper_err_t tls_wrapper_verify_certificate_extension(
+ 	memset(&ev, 0, sizeof(ev));
+ 	ev.custom_claims = custom_claims;
+ 	ev.custom_claims_length = custom_claims_length;
++#ifndef CCA
+ 	if (!strncmp(evidence.type, "sgx_ecdsa", sizeof(evidence.type))) {
+ 		sgx_quote3_t *quote3 = (sgx_quote3_t *)evidence.ecdsa.quote;
+ 
+@@ -248,6 +270,7 @@ tls_wrapper_err_t tls_wrapper_verify_certificate_extension(
+ 		ev.quote = (char *)quote3;
+ 		ev.quote_size = sizeof(sgx_quote3_t);
+ 	}
++#endif
+ #if 0
+ 	else if (!strncmp(evidence.type, "tdx_ecdsa", sizeof(evidence.type))) {
+ 		sgx_quote4_t *quote4 = (sgx_quote4_t *)evidence.tdx.quote;
+@@ -260,6 +283,7 @@ tls_wrapper_err_t tls_wrapper_verify_certificate_extension(
+ 		ev.quote = (char *)quote4;
+ 	}
+ #endif
++#ifndef CCA
+ 	else if (!strncmp(evidence.type, "csv", sizeof(evidence.type))) {
+ 		csv_evidence *c_evi = (csv_evidence *)evidence.csv.report;
+ 		csv_attestation_report *report = &c_evi->attestation_report;
+@@ -283,6 +307,19 @@ tls_wrapper_err_t tls_wrapper_verify_certificate_extension(
+ 		ev.quote = (char *)report;
+ 		ev.quote_size = sizeof(*report);
+ 	}
++#endif
++#ifdef CCA
++	if (!strncmp(evidence.type, "cca", sizeof(evidence.type))) {
++		rtls_cca_evidence_t *cca =
++			(rtls_cca_evidence_t *)tls_ctx->rtls_handle->verifier->verifier_private;
++		if (!cca) {
++			ret = TLS_WRAPPER_ERR_INVALID;
++			goto err;
++		}
++		ev.cca = *cca;
++		ev.type = CCA_EVIDENCE;
++	}
++#endif
+ 
+ 	if (tls_ctx->rtls_handle->user_callback) {
+ 		int rc = tls_ctx->rtls_handle->user_callback(&ev);
+diff --git a/src/tls_wrappers/nulltls/negotiate.c b/src/tls_wrappers/nulltls/negotiate.c
+index 028d78e..b7308c2 100644
+--- a/src/tls_wrappers/nulltls/negotiate.c
++++ b/src/tls_wrappers/nulltls/negotiate.c
+@@ -23,7 +23,11 @@ tls_wrapper_err_t nulltls_negotiate(tls_wrapper_ctx_t *ctx, int fd)
+ 		size_t pubkey_buffer_size = 0;
+ 		uint8_t pubkey_buffer[pubkey_buffer_size];
+ 		tls_wrapper_err_t err = tls_wrapper_verify_certificate_extension(
+-			ctx, pubkey_buffer, pubkey_buffer_size, NULL, 0, NULL, 0);
++			ctx, pubkey_buffer, pubkey_buffer_size, NULL,
++#ifdef CCA
++			NULL, 0,
++#endif
++			0, NULL, 0);
+ 		if (err != TLS_WRAPPER_ERR_NONE) {
+ 			RTLS_ERR("ERROR: failed to verify certificate extension\n");
+ 			return err;
+diff --git a/src/tls_wrappers/openssl/CMakeLists.txt b/src/tls_wrappers/openssl/CMakeLists.txt
+index 2bc8da8..77606d2 100644
+--- a/src/tls_wrappers/openssl/CMakeLists.txt
++++ b/src/tls_wrappers/openssl/CMakeLists.txt
+@@ -30,6 +30,9 @@ set(SOURCES cleanup.c
+             use_privkey.c
+             x509_openssl10x.c
+             )
++if(CCA)
++    list(APPEND SOURCES get_nonce.c)
++endif()
+ 
+ # Generate library
+ if(SGX)
+diff --git a/src/tls_wrappers/openssl/get_nonce.c b/src/tls_wrappers/openssl/get_nonce.c
+new file mode 100644
+index 0000000..490cd1c
+--- /dev/null
++++ b/src/tls_wrappers/openssl/get_nonce.c
+@@ -0,0 +1,28 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <string.h>
++#include <rats-tls/log.h>
++#include <rats-tls/tls_wrapper.h>
++#include "openssl.h"
++
++tls_wrapper_err_t openssl_tls_get_nonce(tls_wrapper_ctx_t *ctx, bool peer, void *buf,
++					size_t *buf_size)
++{
++	if (!ctx || !buf || !buf_size)
++		return -TLS_WRAPPER_ERR_INVALID;
++
++	openssl_ctx_t *ssl_ctx = ctx->tls_private;
++	if (!ssl_ctx || !ssl_ctx->ssl)
++		return -TLS_WRAPPER_ERR_NONCE;
++
++	size_t len;
++	bool server = (ctx->conf_flags & RATS_TLS_CONF_FLAGS_SERVER) != 0;
++	if ((server && peer) || (!server && !peer))
++		len = SSL_get_client_random(ssl_ctx->ssl, buf, *buf_size);
++	else
++		len = SSL_get_server_random(ssl_ctx->ssl, buf, *buf_size);
++
++	if (!len)
++		return -TLS_WRAPPER_ERR_NONCE;
++	*buf_size = len;
++	return TLS_WRAPPER_ERR_NONE;
++}
+diff --git a/src/tls_wrappers/openssl/main.c b/src/tls_wrappers/openssl/main.c
+index c1c88fe..b45e369 100644
+--- a/src/tls_wrappers/openssl/main.c
++++ b/src/tls_wrappers/openssl/main.c
+@@ -15,6 +15,9 @@ extern tls_wrapper_err_t openssl_tls_use_privkey(tls_wrapper_ctx_t *ctx, rats_tl
+ 						 void *privkey_buf, size_t privkey_len);
+ extern tls_wrapper_err_t openssl_tls_use_cert(tls_wrapper_ctx_t *ctx,
+ 					      rats_tls_cert_info_t *cert_info);
++#ifdef CCA
++extern tls_wrapper_err_t openssl_tls_get_nonce(tls_wrapper_ctx_t *, bool, void *, size_t *);
++#endif
+ extern tls_wrapper_err_t openssl_tls_negotiate(tls_wrapper_ctx_t *, int fd);
+ extern tls_wrapper_err_t openssl_tls_transmit(tls_wrapper_ctx_t *, void *, size_t *);
+ extern tls_wrapper_err_t openssl_tls_receive(tls_wrapper_ctx_t *, void *, size_t *);
+@@ -28,6 +31,9 @@ static tls_wrapper_opts_t openssl_opts = {
+ 	.init = openssl_tls_init,
+ 	.use_privkey = openssl_tls_use_privkey,
+ 	.use_cert = openssl_tls_use_cert,
++#ifdef CCA
++	.get_nonce = openssl_tls_get_nonce,
++#endif
+ 	.negotiate = openssl_tls_negotiate,
+ 	.transmit = openssl_tls_transmit,
+ 	.receive = openssl_tls_receive,
+diff --git a/src/tls_wrappers/openssl/negotiate.c b/src/tls_wrappers/openssl/negotiate.c
+index 8657924..246292f 100644
+--- a/src/tls_wrappers/openssl/negotiate.c
++++ b/src/tls_wrappers/openssl/negotiate.c
+@@ -11,6 +11,9 @@
+ #include "openssl.h"
+ 
+ extern int verify_certificate(int preverify_ok, X509_STORE_CTX *store);
++#ifdef CCA
++extern int generate_certificate(SSL *ssl, void *ctx);
++#endif
+ 
+ tls_wrapper_err_t openssl_internal_negotiate(tls_wrapper_ctx_t *ctx, unsigned long conf_flags,
+ 					     int fd, int (*verify)(int, X509_STORE_CTX *))
+@@ -37,10 +40,17 @@ tls_wrapper_err_t openssl_internal_negotiate(tls_wrapper_ctx_t *ctx, unsigned lo
+ 		SSL_CTX_set_verify(ssl_ctx->sctx, mode, verify);
+ 	}
+ 
++#ifdef CCA
++	SSL_CTX_set_cert_cb(ssl_ctx->sctx, generate_certificate, ctx);
++#endif
++
+ 	SSL *ssl = SSL_new(ssl_ctx->sctx);
+ 	if (!ssl)
+ 		return -TLS_WRAPPER_ERR_NO_MEM;
+ 
++#ifdef CCA
++	ssl_ctx->ssl = ssl;
++#endif
+ 	X509_STORE *cert_store = SSL_CTX_get_cert_store(ssl_ctx->sctx);
+ 	X509_STORE_set_ex_data(cert_store, openssl_ex_data_idx, ctx);
+ 
+@@ -68,10 +78,15 @@ tls_wrapper_err_t openssl_internal_negotiate(tls_wrapper_ctx_t *ctx, unsigned lo
+ 		// TODO: handle result of SSL_get_error()
+ 		print_openssl_err_all(ssl, err);
+ 
++#ifdef CCA
++		ssl_ctx->ssl = NULL;
++#endif
+ 		return OPENSSL_ERR_CODE(err);
+ 	}
+ 
++#ifndef CCA
+ 	ssl_ctx->ssl = ssl;
++#endif
+ 
+ 	if (conf_flags & RATS_TLS_CONF_FLAGS_SERVER)
+ 		RTLS_DEBUG("success to negotiate\n");
+diff --git a/src/tls_wrappers/openssl/un_negotiate.c b/src/tls_wrappers/openssl/un_negotiate.c
+index 20acd4f..60065ca 100644
+--- a/src/tls_wrappers/openssl/un_negotiate.c
++++ b/src/tls_wrappers/openssl/un_negotiate.c
+@@ -13,6 +13,9 @@
+ #include "internal/core.h"
+ #include "internal/dice.h"
+ 
++#ifdef CCA
++extern tls_wrapper_err_t openssl_tls_get_nonce(tls_wrapper_ctx_t *, bool, void *, size_t *);
++#endif
+ static int rtls_memcpy_s(void *dst, uint32_t dst_size, const void *src, uint32_t num_bytes)
+ {
+ 	int result = 0;
+@@ -235,8 +238,23 @@ int verify_certificate(int preverify_ok, X509_STORE_CTX *ctx)
+ 		return rc;
+ 	}
+ 
+-	tls_wrapper_err_t t_err = tls_wrapper_verify_certificate_extension(
+-		tls_ctx, pubkey_buffer, pubkey_buffer_size, evidence_buffer, evidence_buffer_size,
++	tls_wrapper_err_t t_err;
++#ifdef CCA
++	uint8_t nonce_buffer[64];
++	size_t nonce_buffer_size = sizeof(nonce_buffer);
++	t_err = openssl_tls_get_nonce(tls_ctx, false, nonce_buffer, &nonce_buffer_size);
++	if (t_err != TLS_WRAPPER_ERR_NONE) {
++		free(evidence_buffer);
++		free(endorsements_buffer);
++		return 0;
++	}
++#endif
++	t_err = tls_wrapper_verify_certificate_extension(
++		tls_ctx, pubkey_buffer, pubkey_buffer_size, evidence_buffer,
++#ifdef CCA
++		nonce_buffer, nonce_buffer_size,
++#endif
++		evidence_buffer_size,
+ 		endorsements_buffer, endorsements_buffer_size);
+ 	if (t_err != TLS_WRAPPER_ERR_NONE) {
+ 		RTLS_ERR("failed to verify certificate extension %#x\n", t_err);
+@@ -245,3 +263,13 @@ int verify_certificate(int preverify_ok, X509_STORE_CTX *ctx)
+ 
+ 	return SSL_SUCCESS;
+ }
++
++#ifdef CCA
++int generate_certificate(__attribute__((unused)) SSL *ssl, void *ctx)
++{
++	tls_wrapper_ctx_t *tls_ctx = ctx;
++	if (!tls_ctx || rtls_core_generate_certificate(tls_ctx->rtls_handle) != RATS_TLS_ERR_NONE)
++		return 0;
++	return 1;
++}
++#endif
+diff --git a/src/verifiers/CMakeLists.txt b/src/verifiers/CMakeLists.txt
+index 3f0103c..8e380db 100644
+--- a/src/verifiers/CMakeLists.txt
++++ b/src/verifiers/CMakeLists.txt
+@@ -28,3 +28,7 @@ endif()
+ if(SGX)
+     add_subdirectory(sgx-la)
+ endif()
++
++if(CCA)
++    add_subdirectory(cca)
++endif()
+diff --git a/src/verifiers/cca/CMakeLists.txt b/src/verifiers/cca/CMakeLists.txt
+new file mode 100644
+index 0000000..2564a3f
+--- /dev/null
++++ b/src/verifiers/cca/CMakeLists.txt
+@@ -0,0 +1,16 @@
++project(verifier_cca)
++
++include_directories(${INCLUDE_DIRS} /usr/local/include)
++
++set(LIBRARY_DIRS ${CMAKE_BINARY_DIR}/src ${RATS_TLS_INSTALL_LIB_PATH}
++                 /usr/local/lib /usr/local/lib64)
++link_directories(${LIBRARY_DIRS})
++
++set(SOURCES cleanup.c init.c main.c pre_init.c verify_evidence.c)
++
++add_library(${PROJECT_NAME} SHARED ${SOURCES})
++target_link_libraries(${PROJECT_NAME} ${RATS_TLS_LDFLAGS} ${RTLS_LIB}
++                      t_cose qcbor crypto m)
++set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${VERSION} SOVERSION ${VERSION_MAJOR})
++
++install(TARGETS ${PROJECT_NAME} DESTINATION ${RATS_TLS_INSTALL_LIBV_PATH})
+diff --git a/src/verifiers/cca/cca_verifier.h b/src/verifiers/cca/cca_verifier.h
+new file mode 100644
+index 0000000..eb49305
+--- /dev/null
++++ b/src/verifiers/cca/cca_verifier.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#ifndef _RATS_TLS_CCA_VERIFIER_H
++#define _RATS_TLS_CCA_VERIFIER_H
++
++#include <rats-tls/cca.h>
++
++typedef struct {
++	rtls_cca_evidence_t public_view;
++} cca_verifier_private_t;
++
++void cca_verifier_reset(cca_verifier_private_t *private);
++
++#endif
+diff --git a/src/verifiers/cca/cleanup.c b/src/verifiers/cca/cleanup.c
+new file mode 100644
+index 0000000..2c1d4f8
+--- /dev/null
++++ b/src/verifiers/cca/cleanup.c
+@@ -0,0 +1,14 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <stdlib.h>
++#include <rats-tls/verifier.h>
++#include "cca_verifier.h"
++
++enclave_verifier_err_t cca_verifier_cleanup(enclave_verifier_ctx_t *ctx)
++{
++	if (ctx && ctx->verifier_private) {
++		cca_verifier_reset(ctx->verifier_private);
++		free(ctx->verifier_private);
++		ctx->verifier_private = NULL;
++	}
++	return ENCLAVE_VERIFIER_ERR_NONE;
++}
+diff --git a/src/verifiers/cca/init.c b/src/verifiers/cca/init.c
+new file mode 100644
+index 0000000..36a6c47
+--- /dev/null
++++ b/src/verifiers/cca/init.c
+@@ -0,0 +1,14 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <stdlib.h>
++#include <rats-tls/verifier.h>
++#include "cca_verifier.h"
++
++enclave_verifier_err_t cca_verifier_init(enclave_verifier_ctx_t *ctx,
++					 __attribute__((unused)) rats_tls_cert_algo_t algo)
++{
++	if (!ctx)
++		return -ENCLAVE_VERIFIER_ERR_INVALID;
++	ctx->verifier_private = calloc(1, sizeof(cca_verifier_private_t));
++	return ctx->verifier_private ? ENCLAVE_VERIFIER_ERR_NONE :
++				       -ENCLAVE_VERIFIER_ERR_NO_MEM;
++}
+diff --git a/src/verifiers/cca/main.c b/src/verifiers/cca/main.c
+new file mode 100644
+index 0000000..0b48176
+--- /dev/null
++++ b/src/verifiers/cca/main.c
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <rats-tls/log.h>
++#include <rats-tls/verifier.h>
++
++extern enclave_verifier_err_t enclave_verifier_register(enclave_verifier_opts_t *);
++extern enclave_verifier_err_t cca_verifier_pre_init(void);
++extern enclave_verifier_err_t cca_verifier_init(enclave_verifier_ctx_t *, rats_tls_cert_algo_t);
++extern enclave_verifier_err_t cca_verify_evidence(enclave_verifier_ctx_t *,
++						  attestation_evidence_t *, uint8_t *,
++						  uint32_t, attestation_endorsement_t *);
++extern enclave_verifier_err_t cca_verifier_cleanup(enclave_verifier_ctx_t *);
++
++static enclave_verifier_opts_t cca_verifier_opts = {
++	.api_version = ENCLAVE_VERIFIER_API_VERSION_DEFAULT,
++	.flags = ENCLAVE_VERIFIER_OPTS_FLAGS_CCA,
++	.name = "cca",
++	.priority = 45,
++	.pre_init = cca_verifier_pre_init,
++	.init = cca_verifier_init,
++	.verify_evidence = cca_verify_evidence,
++	.cleanup = cca_verifier_cleanup,
++};
++
++void __attribute__((constructor)) libverifier_cca_init(void)
++{
++	enclave_verifier_err_t err = enclave_verifier_register(&cca_verifier_opts);
++	if (err != ENCLAVE_VERIFIER_ERR_NONE)
++		RTLS_ERR("failed to register verifier 'cca' %#x\n", err);
++}
+diff --git a/src/verifiers/cca/pre_init.c b/src/verifiers/cca/pre_init.c
+new file mode 100644
+index 0000000..77b3f5f
+--- /dev/null
++++ b/src/verifiers/cca/pre_init.c
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <rats-tls/verifier.h>
++
++enclave_verifier_err_t cca_verifier_pre_init(void)
++{
++	return ENCLAVE_VERIFIER_ERR_NONE;
++}
+diff --git a/src/verifiers/cca/trust_anchors.h b/src/verifiers/cca/trust_anchors.h
+new file mode 100644
+index 0000000..737a3db
+--- /dev/null
++++ b/src/verifiers/cca/trust_anchors.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: MulanPSL-2.0 */
++#ifndef _RATS_TLS_CCA_TRUST_ANCHORS_H
++#define _RATS_TLS_CCA_TRUST_ANCHORS_H
++
++static const char cca_equipment_root_ca_pem[] =
++"-----BEGIN CERTIFICATE-----\n"
++"MIICoDCCAgKgAwIBAgIDazWSMAoGCCqGSM49BAMEMDwxDzANBgNVBAoTBkh1YXdl\n"
++"aTEpMCcGA1UEAxMgSHVhd2VpIEVDQyBBdHRlc3RhdGlvbiBSb290IENBIDEwIBcN\n"
++"MjQwMzMwMDQ1NDEyWhgPMjA3NDAzMzAwNDU0MTJaMDwxDzANBgNVBAoTBkh1YXdl\n"
++"aTEpMCcGA1UEAxMgSHVhd2VpIEVDQyBBdHRlc3RhdGlvbiBSb290IENBIDEwgZsw\n"
++"EAYHKoZIzj0CAQYFK4EEACMDgYYABAGPYVYcrvY5RGQiKtogIiYGWJRs/1Dwr9hJ\n"
++"5zsc9zQaceMX0JANd8p2miTRJbri1iy1i0E0kPpQyLF13t+1tDwlqgG5TN8lwaCn\n"
++"1E8AiOtZ/EP5L8Umpgpl89kcRv937Jkv2ivUznfJzgdNtZV1zDkSR0qvoPPGF5FJ\n"
++"UVCQDaz9C1D4RKOBrTCBqjAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB\n"
++"/zBHBgNVHSAEQDA+MDwGDCsGAQQBj1uBSQEEBzAsMCoGCCsGAQUFBwIBFh5odHRw\n"
++"czovL3N1cHBvcnQuaHVhd2VpLmNvbS9wa2kwHQYDVR0OBBYEFKmN+LpfDw9KWfN5\n"
++"oqWa4knCX5+kMB8GA1UdIwQYMBaAFKmN+LpfDw9KWfN5oqWa4knCX5+kMAoGCCqG\n"
++"SM49BAMEA4GLADCBhwJCAS2rcB3imVKaunb/t+pq2hstjHAl5vqP2rt+0fjN14Cq\n"
++"csMCl2u2oHznPTSaeN1CK5ObKROxkpdwsYVISiGDu3eJAkFFqY25Q86PK3sBro1V\n"
++"MUnKR0sZvKRQK1Uvr7K/kDqQrW+nSgfdSX/n4ZmEYyozXyP3DQYYZwUNzfqk0ZHW\n"
++"rXR7Mg==\n"
++"-----END CERTIFICATE-----\n";
++
++static const char cca_product_ca_pem[] =
++"-----BEGIN CERTIFICATE-----\n"
++"MIIDEzCCAnWgAwIBAgIREjwNmamCifcSzIM4CHEAvYEwCgYIKoZIzj0EAwQwPDEP\n"
++"MA0GA1UEChMGSHVhd2VpMSkwJwYDVQQDEyBIdWF3ZWkgRUNDIEF0dGVzdGF0aW9u\n"
++"IFJvb3QgQ0EgMTAgFw0yNDA5MTExMDEwNDBaGA8yMDc0MDMyODEwMTA0MFowRjEL\n"
++"MAkGA1UEBhMCQ04xDzANBgNVBAoTBkh1YXdlaTEmMCQGA1UEAxMdSHVhd2VpIENv\n"
++"bXB1dGluZyBFQ0MgQ0NBIENBIDEwgZswEAYHKoZIzj0CAQYFK4EEACMDgYYABAB9\n"
++"eCf3EORVOECC4DFgOgdvttpC5nJ1/Yol0ErwQVhmP4DIMOnqHUVpzR/VXwblKVkH\n"
++"Iu3LJ3fzBU0E+AQcdmMu/AG1ynEzkPvI7zhlkRVVX4nS7YoGndUYw86gsJdSfVn1\n"
++"+ESZm1u+o9jMZIxZ4zLYEa+BzOYNOtRDLDGSLD06kdrygaOCAQcwggEDMB8GA1Ud\n"
++"IwQYMBaAFKmN+LpfDw9KWfN5oqWa4knCX5+kMB0GA1UdDgQWBBSIMTazZebllUGe\n"
++"vBwRPBtf4zdi7TASBgNVHRMBAf8ECDAGAQH/AgEAMEcGA1UdIARAMD4wPAYMKwYB\n"
++"BAGPW4FJAQQHMCwwKgYIKwYBBQUHAgEWHmh0dHBzOi8vc3VwcG9ydC5odWF3ZWku\n"
++"Y29tL3BraTAOBgNVHQ8BAf8EBAMCAQYwVAYDVR0fBE0wSzBJoEegRYZDaHR0cDov\n"
++"L3N1cHBvcnQuaHVhd2VpLmNvbS9zdXBwb3J0L3BraS9lY2NfYXR0ZW5zdGF0aW9u\n"
++"X3Jvb3RfY3JsLmNybDAKBggqhkjOPQQDBAOBiwAwgYcCQgHaDPvAEUAVeRVo4Mn+\n"
++"UoVlcPtwa1TWDHYInzHQ9leL7PVTZLnCg6vKSuo0G3I9Gz/YtOz+ylTpzGekqJf/\n"
++"00JKcQJBep4ZMYxe+KmplOj/uqoUvy97sQ77jFe+kQvlXkbt7QidjnTlT2itS6CS\n"
++"HvWyRwqIjVLItwhea7FvwDhvUgyLdTc=\n"
++"-----END CERTIFICATE-----\n";
++
++#endif
+diff --git a/src/verifiers/cca/verify_evidence.c b/src/verifiers/cca/verify_evidence.c
+new file mode 100644
+index 0000000..1a73f2f
+--- /dev/null
++++ b/src/verifiers/cca/verify_evidence.c
+@@ -0,0 +1,504 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include <limits.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <openssl/bio.h>
++#include <openssl/ec.h>
++#include <openssl/evp.h>
++#include <openssl/pem.h>
++#include <openssl/x509.h>
++#include <qcbor/qcbor.h>
++#include <qcbor/qcbor_spiffy_decode.h>
++#include <t_cose/t_cose_sign1_verify.h>
++#include <rats-tls/log.h>
++#include <rats-tls/verifier.h>
++#include "cca_verifier.h"
++#include "trust_anchors.h"
++
++#define CCA_TOKEN_COLLECTION_TAG 399
++#define CCA_PLATFORM_TOKEN_LABEL 44234
++#define CCA_REALM_TOKEN_LABEL 44241
++
++#define CCA_CLAIM_CHALLENGE 10
++#define CCA_CLAIM_PROFILE 265
++#define CCA_REALM_RPV 44235
++#define CCA_REALM_HASH_ALG 44236
++#define CCA_REALM_RAK 44237
++#define CCA_REALM_RIM 44238
++#define CCA_REALM_REM 44239
++#define CCA_REALM_RAK_HASH_ALG 44240
++#define CCA_PLATFORM_IMPLEMENTATION_ID 2396
++#define CCA_PLATFORM_INSTANCE_ID 256
++#define CCA_PLATFORM_CONFIG 2401
++#define CCA_PLATFORM_LIFECYCLE 2395
++#define CCA_PLATFORM_SW_COMPONENTS 2399
++#define CCA_PLATFORM_VERIFICATION_SERVICE 2400
++#define CCA_PLATFORM_HASH_ALG 2402
++#define CCA_SW_COMPONENT_TYPE 1
++#define CCA_SW_COMPONENT_MEASUREMENT 2
++#define CCA_SW_COMPONENT_VERSION 4
++#define CCA_SW_COMPONENT_SIGNER_ID 5
++#define CCA_SW_COMPONENT_HASH_ALG 6
++
++#define CCA_IMPLEMENTATION_ID_SIZE 32
++#define CCA_INSTANCE_ID_SIZE 33
++#define CCA_RPV_SIZE 64
++#define CCA_P521_COORDINATE_SIZE 66
++#define CCA_P521_PUBLIC_KEY_SIZE 133
++
++static void free_buffer(rtls_cca_buffer_t *buffer)
++{
++	free((void *)buffer->data);
++	buffer->data = NULL;
++	buffer->size = 0;
++}
++
++void cca_verifier_reset(cca_verifier_private_t *private)
++{
++	if (!private)
++		return;
++
++	rtls_cca_platform_claims_t *p = &private->public_view.platform;
++	free_buffer(&p->profile);
++	free_buffer(&p->challenge);
++	free_buffer(&p->implementation_id);
++	free_buffer(&p->instance_id);
++	free_buffer(&p->config);
++	free_buffer(&p->verification_service);
++	free_buffer(&p->hash_algorithm);
++	for (size_t i = 0; i < p->software_component_count; ++i) {
++		rtls_cca_sw_component_t *component =
++			(rtls_cca_sw_component_t *)&p->software_components[i];
++		free_buffer(&component->component_type);
++		free_buffer(&component->measurement);
++		free_buffer(&component->version);
++		free_buffer(&component->signer_id);
++		free_buffer(&component->hash_algorithm);
++	}
++	free((void *)p->software_components);
++
++	rtls_cca_realm_claims_t *r = &private->public_view.realm;
++	free_buffer(&r->challenge);
++	free_buffer(&r->profile);
++	free_buffer(&r->personalization_value);
++	free_buffer(&r->initial_measurement);
++	for (size_t i = 0; i < RATS_TLS_CCA_REM_COUNT; ++i)
++		free_buffer(&r->extensible_measurements[i]);
++	free_buffer(&r->hash_algorithm);
++	free_buffer(&r->realm_attestation_key);
++	free_buffer(&r->realm_attestation_key_hash_algorithm);
++
++	memset(&private->public_view, 0, sizeof(private->public_view));
++}
++
++static int copy_buffer(rtls_cca_buffer_t *destination, UsefulBufC source)
++{
++	if (!source.ptr || source.len == 0)
++		return -1;
++	uint8_t *copy = malloc(source.len);
++	if (!copy)
++		return -1;
++	memcpy(copy, source.ptr, source.len);
++	destination->data = copy;
++	destination->size = source.len;
++	return 0;
++}
++
++static bool buffer_equals(const rtls_cca_buffer_t *buffer, const char *text)
++{
++	size_t len = strlen(text);
++	return buffer->size == len && !memcmp(buffer->data, text, len);
++}
++
++static size_t hash_size_for_name(const rtls_cca_buffer_t *algorithm)
++{
++	if (buffer_equals(algorithm, "sha-256"))
++		return 32;
++	if (buffer_equals(algorithm, "sha-384"))
++		return 48;
++	if (buffer_equals(algorithm, "sha-512"))
++		return 64;
++	return 0;
++}
++
++static const EVP_MD *hash_md_for_name(const rtls_cca_buffer_t *algorithm)
++{
++	if (buffer_equals(algorithm, "sha-256"))
++		return EVP_sha256();
++	if (buffer_equals(algorithm, "sha-384"))
++		return EVP_sha384();
++	if (buffer_equals(algorithm, "sha-512"))
++		return EVP_sha512();
++	return NULL;
++}
++
++static int decode_collection(const uint8_t *token, size_t token_len, UsefulBufC *platform,
++			     UsefulBufC *realm)
++{
++	QCBORDecodeContext decode;
++	QCBORItem map;
++	QCBORDecode_Init(&decode, (UsefulBufC) { token, token_len }, QCBOR_DECODE_MODE_NORMAL);
++	QCBORDecode_EnterMap(&decode, &map);
++	if (QCBORDecode_GetError(&decode) != QCBOR_SUCCESS ||
++	    !QCBORDecode_IsTagged(&decode, &map, CCA_TOKEN_COLLECTION_TAG))
++		return -1;
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_PLATFORM_TOKEN_LABEL, platform);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_REALM_TOKEN_LABEL, realm);
++	QCBORDecode_ExitMap(&decode);
++	return QCBORDecode_Finish(&decode) == QCBOR_SUCCESS && platform->len && realm->len ? 0 :
++										     -1;
++}
++
++static int decode_cose_payload(UsefulBufC encoded, EVP_PKEY *key, UsefulBufC *payload)
++{
++	struct t_cose_sign1_verify_ctx verify;
++	struct t_cose_parameters parameters;
++	t_cose_sign1_verify_init(&verify, key ? 0 : T_COSE_OPT_DECODE_ONLY);
++	if (key) {
++		struct t_cose_key cose_key = {
++			.crypto_lib = T_COSE_CRYPTO_LIB_OPENSSL,
++			.k.key_ptr = key,
++		};
++		t_cose_sign1_set_verification_key(&verify, cose_key);
++	}
++	enum t_cose_err_t err = t_cose_sign1_verify(
++		&verify, (struct q_useful_buf_c) { encoded.ptr, encoded.len },
++		(struct q_useful_buf_c *)payload, &parameters);
++	if (err != T_COSE_SUCCESS || parameters.cose_algorithm_id != T_COSE_ALGORITHM_ES512)
++		return -1;
++	return 0;
++}
++
++static X509 *parse_certificate(const uint8_t *data, size_t size)
++{
++	BIO *bio = BIO_new_mem_buf(data, (int)size);
++	if (!bio)
++		return NULL;
++	X509 *certificate = PEM_read_bio_X509(bio, NULL, NULL, NULL);
++	BIO_free(bio);
++	if (certificate)
++		return certificate;
++	const unsigned char *cursor = data;
++	return d2i_X509(NULL, &cursor, (long)size);
++}
++
++static bool certificate_is_p521(X509 *certificate)
++{
++	EVP_PKEY *pkey = X509_get_pubkey(certificate);
++	if (!pkey || EVP_PKEY_base_id(pkey) != EVP_PKEY_EC) {
++		EVP_PKEY_free(pkey);
++		return false;
++	}
++	EC_KEY *ec = EVP_PKEY_get1_EC_KEY(pkey);
++	EVP_PKEY_free(pkey);
++	if (!ec)
++		return false;
++	const EC_GROUP *group = EC_KEY_get0_group(ec);
++	bool result = group && EC_GROUP_get_curve_name(group) == NID_secp521r1;
++	EC_KEY_free(ec);
++	return result;
++}
++
++static int verify_certificate_chain(const uint8_t *device_data, size_t device_size,
++				    X509 **device_out)
++{
++	X509 *device = parse_certificate(device_data, device_size);
++	X509 *product = parse_certificate((const uint8_t *)cca_product_ca_pem,
++					 sizeof(cca_product_ca_pem) - 1);
++	X509 *root = parse_certificate((const uint8_t *)cca_equipment_root_ca_pem,
++				      sizeof(cca_equipment_root_ca_pem) - 1);
++	if (!device || !product || !root || !certificate_is_p521(device) ||
++	    X509_cmp_current_time(X509_get0_notBefore(device)) >= 0 ||
++	    X509_cmp_current_time(X509_get0_notAfter(device)) <= 0 ||
++	    X509_cmp_current_time(X509_get0_notBefore(product)) >= 0 ||
++	    X509_cmp_current_time(X509_get0_notAfter(product)) <= 0 ||
++	    X509_cmp_current_time(X509_get0_notBefore(root)) >= 0 ||
++	    X509_cmp_current_time(X509_get0_notAfter(root)) <= 0)
++		goto err;
++
++	EVP_PKEY *product_key = X509_get_pubkey(product);
++	EVP_PKEY *root_key = X509_get_pubkey(root);
++	if (!product_key || !root_key || X509_verify(device, product_key) != 1 ||
++	    X509_verify(product, root_key) != 1 || X509_verify(root, root_key) != 1) {
++		EVP_PKEY_free(product_key);
++		EVP_PKEY_free(root_key);
++		goto err;
++	}
++	EVP_PKEY_free(product_key);
++	EVP_PKEY_free(root_key);
++	X509_free(product);
++	X509_free(root);
++	*device_out = device;
++	return 0;
++err:
++	X509_free(device);
++	X509_free(product);
++	X509_free(root);
++	return -1;
++}
++
++static int decode_realm_claims(UsefulBufC payload, cca_verifier_private_t *private,
++			       EVP_PKEY **rak_key, uint8_t rak_raw[CCA_P521_PUBLIC_KEY_SIZE])
++{
++	QCBORDecodeContext decode;
++	QCBORItem map;
++	UsefulBufC challenge, profile, rpv, rim, hash_alg, rak, rak_hash_alg;
++	QCBORDecode_Init(&decode, payload, QCBOR_DECODE_MODE_NORMAL);
++	QCBORDecode_EnterMap(&decode, &map);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_CLAIM_CHALLENGE, &challenge);
++	QCBORDecode_GetTextStringInMapN(&decode, CCA_CLAIM_PROFILE, &profile);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_REALM_RPV, &rpv);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_REALM_RIM, &rim);
++	QCBORDecode_GetTextStringInMapN(&decode, CCA_REALM_HASH_ALG, &hash_alg);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_REALM_RAK, &rak);
++	QCBORDecode_GetTextStringInMapN(&decode, CCA_REALM_RAK_HASH_ALG, &rak_hash_alg);
++	QCBORItem rem_item;
++	QCBORDecode_GetItemInMapN(&decode, CCA_REALM_REM, QCBOR_TYPE_ARRAY, &rem_item);
++	if (QCBORDecode_GetError(&decode) != QCBOR_SUCCESS ||
++	    rem_item.val.uCount != RATS_TLS_CCA_REM_COUNT)
++		return -1;
++
++	rtls_cca_realm_claims_t *view = &private->public_view.realm;
++	if (challenge.len != RATS_TLS_CCA_CHALLENGE_SIZE || profile.len == 0 ||
++	    rpv.len != CCA_RPV_SIZE || copy_buffer(&view->challenge, challenge) ||
++	    copy_buffer(&view->profile, profile) ||
++	    copy_buffer(&view->personalization_value, rpv) ||
++	    copy_buffer(&view->initial_measurement, rim) ||
++	    copy_buffer(&view->hash_algorithm, hash_alg) ||
++	    copy_buffer(&view->realm_attestation_key, rak) ||
++	    copy_buffer(&view->realm_attestation_key_hash_algorithm, rak_hash_alg))
++		return -1;
++
++	QCBORDecode_EnterArrayFromMapN(&decode, CCA_REALM_REM);
++	for (size_t i = 0; i < RATS_TLS_CCA_REM_COUNT; ++i) {
++		UsefulBufC rem;
++		QCBORDecode_GetByteString(&decode, &rem);
++		if (copy_buffer(&view->extensible_measurements[i], rem))
++			return -1;
++	}
++	QCBORDecode_ExitArray(&decode);
++	QCBORDecode_ExitMap(&decode);
++	if (QCBORDecode_Finish(&decode) != QCBOR_SUCCESS)
++		return -1;
++
++	size_t measurement_size = hash_size_for_name(&view->hash_algorithm);
++	if (!measurement_size || view->initial_measurement.size != measurement_size)
++		return -1;
++	for (size_t i = 0; i < RATS_TLS_CCA_REM_COUNT; ++i)
++		if (view->extensible_measurements[i].size != measurement_size)
++			return -1;
++
++	QCBORDecodeContext key_decode;
++	QCBORItem key_map;
++	int64_t key_type = 0;
++	int64_t curve = 0;
++	UsefulBufC x, y;
++	QCBORDecode_Init(&key_decode, rak, QCBOR_DECODE_MODE_NORMAL);
++	QCBORDecode_EnterMap(&key_decode, &key_map);
++	QCBORDecode_GetInt64InMapN(&key_decode, 1, &key_type);
++	QCBORDecode_GetInt64InMapN(&key_decode, -1, &curve);
++	QCBORDecode_GetByteStringInMapN(&key_decode, -2, &x);
++	QCBORDecode_GetByteStringInMapN(&key_decode, -3, &y);
++	QCBORDecode_ExitMap(&key_decode);
++	if (QCBORDecode_Finish(&key_decode) != QCBOR_SUCCESS || key_type != 2 || curve != 3 ||
++	    x.len != CCA_P521_COORDINATE_SIZE || y.len != CCA_P521_COORDINATE_SIZE)
++		return -1;
++
++	rak_raw[0] = 4;
++	memcpy(rak_raw + 1, x.ptr, x.len);
++	memcpy(rak_raw + 1 + x.len, y.ptr, y.len);
++	EC_GROUP *group = EC_GROUP_new_by_curve_name(NID_secp521r1);
++	EC_POINT *point = group ? EC_POINT_new(group) : NULL;
++	EC_KEY *ec = group ? EC_KEY_new_by_curve_name(NID_secp521r1) : NULL;
++	if (!group || !point || !ec ||
++	    EC_POINT_oct2point(group, point, rak_raw, CCA_P521_PUBLIC_KEY_SIZE, NULL) != 1 ||
++	    EC_KEY_set_public_key(ec, point) != 1) {
++		EC_KEY_free(ec);
++		EC_POINT_free(point);
++		EC_GROUP_free(group);
++		return -1;
++	}
++	*rak_key = EVP_PKEY_new();
++	if (!*rak_key || EVP_PKEY_assign_EC_KEY(*rak_key, ec) != 1) {
++		EVP_PKEY_free(*rak_key);
++		*rak_key = NULL;
++		EC_KEY_free(ec);
++		EC_POINT_free(point);
++		EC_GROUP_free(group);
++		return -1;
++	}
++	EC_POINT_free(point);
++	EC_GROUP_free(group);
++	return 0;
++}
++
++static int decode_platform_claims(UsefulBufC payload, cca_verifier_private_t *private)
++{
++	QCBORDecodeContext decode;
++	QCBORItem map;
++	UsefulBufC profile, challenge, impl_id, inst_id, config, verification_service, hash_alg;
++	uint64_t lifecycle = 0;
++	QCBORDecode_Init(&decode, payload, QCBOR_DECODE_MODE_NORMAL);
++	QCBORDecode_EnterMap(&decode, &map);
++	QCBORDecode_GetTextStringInMapN(&decode, CCA_CLAIM_PROFILE, &profile);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_CLAIM_CHALLENGE, &challenge);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_PLATFORM_IMPLEMENTATION_ID, &impl_id);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_PLATFORM_INSTANCE_ID, &inst_id);
++	QCBORDecode_GetByteStringInMapN(&decode, CCA_PLATFORM_CONFIG, &config);
++	QCBORDecode_GetUInt64InMapN(&decode, CCA_PLATFORM_LIFECYCLE, &lifecycle);
++	QCBORDecode_GetTextStringInMapN(&decode, CCA_PLATFORM_VERIFICATION_SERVICE,
++					&verification_service);
++	QCBORDecode_GetTextStringInMapN(&decode, CCA_PLATFORM_HASH_ALG, &hash_alg);
++	QCBORItem components_item;
++	QCBORDecode_GetItemInMapN(&decode, CCA_PLATFORM_SW_COMPONENTS, QCBOR_TYPE_ARRAY,
++				  &components_item);
++	if (QCBORDecode_GetError(&decode) != QCBOR_SUCCESS || profile.len == 0 ||
++	    impl_id.len != CCA_IMPLEMENTATION_ID_SIZE || inst_id.len != CCA_INSTANCE_ID_SIZE ||
++	    lifecycle > UINT16_MAX || components_item.val.uCount == 0 ||
++	    components_item.val.uCount == QCBOR_COUNT_INDICATES_INDEFINITE_LENGTH ||
++	    components_item.val.uCount > payload.len ||
++	    components_item.val.uCount > SIZE_MAX / sizeof(rtls_cca_sw_component_t))
++		return -1;
++
++	rtls_cca_platform_claims_t *view = &private->public_view.platform;
++	if (copy_buffer(&view->profile, profile) || copy_buffer(&view->challenge, challenge) ||
++	    copy_buffer(&view->implementation_id, impl_id) ||
++	    copy_buffer(&view->instance_id, inst_id) || copy_buffer(&view->config, config) ||
++	    copy_buffer(&view->verification_service, verification_service) ||
++	    copy_buffer(&view->hash_algorithm, hash_alg))
++		return -1;
++	view->lifecycle = (uint16_t)lifecycle;
++	view->software_component_count = components_item.val.uCount;
++	rtls_cca_sw_component_t *components =
++		calloc(view->software_component_count, sizeof(*components));
++	if (!components)
++		return -1;
++	view->software_components = components;
++
++	QCBORDecode_EnterArrayFromMapN(&decode, CCA_PLATFORM_SW_COMPONENTS);
++	for (size_t i = 0; i < view->software_component_count; ++i) {
++		QCBORItem component_map;
++		UsefulBufC type, measurement, version, signer_id, component_hash_alg;
++		QCBORDecode_EnterMap(&decode, &component_map);
++		QCBORDecode_GetTextStringInMapN(&decode, CCA_SW_COMPONENT_TYPE, &type);
++		QCBORDecode_GetByteStringInMapN(&decode, CCA_SW_COMPONENT_MEASUREMENT,
++						&measurement);
++		QCBORDecode_GetTextStringInMapN(&decode, CCA_SW_COMPONENT_VERSION, &version);
++		QCBORDecode_GetByteStringInMapN(&decode, CCA_SW_COMPONENT_SIGNER_ID, &signer_id);
++		QCBORDecode_GetTextStringInMapN(&decode, CCA_SW_COMPONENT_HASH_ALG,
++						&component_hash_alg);
++		if (QCBORDecode_GetError(&decode) != QCBOR_SUCCESS || type.len == 0 ||
++		    version.len == 0 || copy_buffer(&components[i].component_type, type) ||
++		    copy_buffer(&components[i].measurement, measurement) ||
++		    copy_buffer(&components[i].version, version) ||
++		    copy_buffer(&components[i].signer_id, signer_id) ||
++		    copy_buffer(&components[i].hash_algorithm, component_hash_alg))
++			return -1;
++		size_t digest_size = hash_size_for_name(&components[i].hash_algorithm);
++		if (!digest_size || components[i].measurement.size != digest_size ||
++		    components[i].signer_id.size != digest_size)
++			return -1;
++		QCBORDecode_ExitMap(&decode);
++	}
++	QCBORDecode_ExitArray(&decode);
++	QCBORDecode_ExitMap(&decode);
++	return QCBORDecode_Finish(&decode) == QCBOR_SUCCESS ? 0 : -1;
++}
++
++static int verify_rak_binding(const cca_verifier_private_t *private,
++			      const uint8_t rak_raw[CCA_P521_PUBLIC_KEY_SIZE])
++{
++	const rtls_cca_buffer_t *algorithm =
++		&private->public_view.realm.realm_attestation_key_hash_algorithm;
++	const EVP_MD *md = hash_md_for_name(algorithm);
++	if (!md)
++		return -1;
++	uint8_t digest[EVP_MAX_MD_SIZE];
++	unsigned int digest_size = 0;
++	if (EVP_Digest(rak_raw, CCA_P521_PUBLIC_KEY_SIZE, digest, &digest_size, md, NULL) != 1)
++		return -1;
++	const rtls_cca_buffer_t *challenge = &private->public_view.platform.challenge;
++	return challenge->size == digest_size && !memcmp(challenge->data, digest, digest_size) ? 0 :
++												 -1;
++}
++
++static int unpack_evidence(const cca_attestation_evidence_t *evidence, const uint8_t **token,
++			   size_t *token_len, const uint8_t **cert, size_t *cert_len)
++{
++	if (evidence->report_len < sizeof(uint64_t) * 2)
++		return -1;
++	const uint8_t *cursor = evidence->report;
++	uint64_t token_size = 0;
++	memcpy(&token_size, cursor, sizeof(token_size));
++	cursor += sizeof(token_size);
++	if (token_size == 0 || token_size > evidence->report_len - sizeof(uint64_t) * 2)
++		return -1;
++	cursor += token_size;
++	uint64_t cert_size = 0;
++	memcpy(&cert_size, cursor, sizeof(cert_size));
++	cursor += sizeof(cert_size);
++	uint64_t remaining = evidence->report_len - sizeof(uint64_t) * 2 - token_size;
++	if (cert_size == 0 || cert_size != remaining)
++		return -1;
++	*token = evidence->report + sizeof(uint64_t);
++	*token_len = (size_t)token_size;
++	*cert = cursor;
++	*cert_len = (size_t)cert_size;
++	return 0;
++}
++
++enclave_verifier_err_t cca_verify_evidence(
++	enclave_verifier_ctx_t *ctx, attestation_evidence_t *evidence, uint8_t *hash,
++	uint32_t hash_len, __attribute__((unused)) attestation_endorsement_t *endorsements)
++{
++	if (!ctx || !ctx->verifier_private || !evidence || !hash ||
++	    hash_len != RATS_TLS_CCA_CHALLENGE_SIZE)
++		return -ENCLAVE_VERIFIER_ERR_INVALID;
++
++	cca_verifier_private_t *private = ctx->verifier_private;
++	cca_verifier_reset(private);
++	const uint8_t *token = NULL;
++	const uint8_t *cert_data = NULL;
++	size_t token_len = 0;
++	size_t cert_len = 0;
++	X509 *device = NULL;
++	EVP_PKEY *device_key = NULL;
++	EVP_PKEY *rak_key = NULL;
++	int result = -1;
++
++	if (unpack_evidence(&evidence->cca, &token, &token_len, &cert_data, &cert_len) ||
++	    verify_certificate_chain(cert_data, cert_len, &device))
++		goto out;
++
++	UsefulBufC platform_token, realm_token, platform_payload, realm_payload;
++	if (decode_collection(token, token_len, &platform_token, &realm_token) ||
++	    decode_cose_payload(platform_token, NULL, &platform_payload) ||
++	    decode_cose_payload(realm_token, NULL, &realm_payload) ||
++	    decode_platform_claims(platform_payload, private))
++		goto out;
++
++	uint8_t rak_raw[CCA_P521_PUBLIC_KEY_SIZE];
++	if (decode_realm_claims(realm_payload, private, &rak_key, rak_raw) ||
++	    private->public_view.realm.challenge.size != hash_len ||
++	    memcmp(private->public_view.realm.challenge.data, hash, hash_len) ||
++	    verify_rak_binding(private, rak_raw))
++		goto out;
++
++	device_key = X509_get_pubkey(device);
++	if (!device_key || decode_cose_payload(platform_token, device_key, &platform_payload) ||
++	    decode_cose_payload(realm_token, rak_key, &realm_payload))
++		goto out;
++
++	result = 0;
++out:
++	EVP_PKEY_free(device_key);
++	EVP_PKEY_free(rak_key);
++	X509_free(device);
++	if (result) {
++		cca_verifier_reset(private);
++		RTLS_ERR("CCA evidence verification failed\n");
++		return -ENCLAVE_VERIFIER_ERR_INVALID;
++	}
++	return ENCLAVE_VERIFIER_ERR_NONE;
++}
+-- 
+2.47.3
+
