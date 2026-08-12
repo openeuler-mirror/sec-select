@@ -13,9 +13,9 @@ WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # ── 1. 生成临时密钥对 ────────────────────────────────────────────────────────
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+openssl ecparam -name prime256v1 -genkey \
     -out "$WORK_DIR/priv.pem" 2>/dev/null
-openssl pkey -in "$WORK_DIR/priv.pem" \
+openssl ec -in "$WORK_DIR/priv.pem" \
     -pubout -out "$WORK_DIR/pub.pem" 2>/dev/null
 
 # ── 2. 加载 CCA attest 模块 ──────────────────────────────────────────────────

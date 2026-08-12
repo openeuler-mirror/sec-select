@@ -76,6 +76,8 @@ RBS 主配置文件，控制监听地址、证明后端、资源存储后端。
 ```yaml
 rest:
   listen_addr: "127.0.0.1:6666"
+  https:
+    enabled: false
 auth:
   attest_token:
     public_key_path: "/etc/rbs/attest_pub.pem"
@@ -101,6 +103,7 @@ resource:
 | 配置路径 | 类型 | 说明 | 适配方法 |
 |----------|------|------|----------|
 | `rest.listen_addr` | string | RBS REST API 监听地址 | 本机测试：`127.0.0.1:6666`；远程访问：`0.0.0.0:6666` |
+| `rest.https.enabled` | boolean | RBS REST API 是否启用 HTTPS | 本机 HTTP 测试：`false`；生产环境建议启用 HTTPS 并配置证书 |
 | `auth.attest_token.public_key_path` | string | GTA TSK 公钥路径，用于验证 token 签名 | 必须与 GTA-Server 的 `tsk_public_key.pem` 一致 |
 | `auth.attest_token.jwks_file` | string | JWKS 文件路径（二选一） | 与 `public_key_path` 二选一，本文不使用 |
 | `attestation.backends.gta.rest.base_url` | string | GTA-Server REST API 地址 | 指向 GTA-Server，如 `http://127.0.0.1:8080`；若 GTA 启用 HTTPS 则改为 `https://` |
@@ -144,7 +147,7 @@ listener "tcp" {
 
 | 文件路径 | 用途 | 生成方式 |
 |----------|------|----------|
-| `/etc/attestation_server/keys/fsk_private_key.pem` | FSK 私钥（Firmware Signing Key） | `openssl genpkey -algorithm RSA-PSS -pkeyopt rsa_keygen_bits:3072` |
+| `/etc/attestation_server/keys/fsk_private_key.pem` | FSK 私钥（File Signing Key） | `openssl genpkey -algorithm RSA-PSS -pkeyopt rsa_keygen_bits:3072` |
 | `/etc/attestation_server/keys/fsk_public_key.pem` | FSK 公钥 | `openssl rsa -in fsk_private_key.pem -pubout` |
 | `/etc/attestation_server/keys/nsk_private_key.pem` | NSK 私钥（Nonce Signing Key） | `openssl genpkey -algorithm RSA-PSS -pkeyopt rsa_keygen_bits:3072` |
 | `/etc/attestation_server/keys/nsk_public_key.pem` | NSK 公钥 | `openssl rsa -in nsk_private_key.pem -pubout` |
@@ -210,11 +213,13 @@ server:
 
 # 插件开关
 plugins:
-  enabled:
-    cca: true        # CCA 模式设为 true，vCCA 模式设为 false
-    virt_cca: false  # vCCA 模式设为 true，CCA 模式设为 false
-    tpm: false
-    # 其他插件保持 false
+  - name: "cca"
+    enabled: true   # CCA 模式设为 true，vCCA 模式设为 false
+  - name: "virt_cca"
+    enabled: false  # vCCA 模式设为 true，CCA 模式设为 false
+  - name: "tpm"
+    enabled: false
+  # 其他插件条目的 enabled 保持 false
 
 # 启动日志路径（原 ccel_data_path）
 boot_log_file_path: "/sys/kernel/config/tsm/report/report0"
@@ -223,8 +228,8 @@ boot_log_file_path: "/sys/kernel/config/tsm/report/report0"
 | 配置项 | 说明 | 适配方法 |
 |--------|------|----------|
 | `server.base_url` | GTA-Server 地址 | 改为 GTA-Server 的实际地址（HTTP 或 HTTPS） |
-| `plugins.enabled.cca` | CCA 插件开关 | CCA 模式：`true`；vCCA 模式：`false` |
-| `plugins.enabled.virt_cca` | vCCA 插件开关 | vCCA 模式：`true`；CCA 模式：`false` |
+| `plugins` 中 `name: "cca"` 的条目 | CCA 插件配置 | CCA 模式：`enabled: true`；vCCA 模式：`enabled: false` |
+| `plugins` 中 `name: "virt_cca"` 的条目 | vCCA 插件配置 | vCCA 模式：`enabled: true`；CCA 模式：`enabled: false` |
 | `boot_log_file_path` | 启动日志路径（原 `ccel_data_path`） | 通常保持默认 |
 
 > **兼容性修复**：如果配置文件中存在 `ccel_data_path`，需替换为 `boot_log_file_path`：
@@ -422,19 +427,13 @@ rbs-cli -b <RBS_URL> -t <TOKEN> res-policy create --name <名称> --content <策
 
 ```bash
 rbs-cli -b <RBS_URL> -t <TOKEN> res create \
-    --provider-name <提供者> \
-    --repository-name <仓库名> \
-    --resource-type <类型> \
-    --resource-name <名称> \
+    --uri <资源URI> \
     --policy-id <策略ID>
 ```
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `--provider-name` | 资源提供者名称 | `vault` |
-| `--repository-name` | 仓库名称 | `default` |
-| `--resource-type` | 资源类型 | `secret` |
-| `--resource-name` | 资源名称 | `openclaw` |
+| `--uri` | 资源 URI，格式为 `<provider>/<repository>/<resource-type>/<resource-name>` | `<资源URI>` |
 | `--policy-id` | 绑定的策略 ID | `c28a6e63-...` |
 
 #### challenge / collect-evidence / get-resource / get-token
@@ -532,7 +531,7 @@ result = {"policy_matched": attestation_valid}
 | 配置项 | CCA 模式 | vCCA 模式 |
 |--------|----------|-----------|
 | 内核模块 | `modprobe tsm && modprobe arm_cca_guest` | 不需要 |
-| Agent 插件 | `cca: true` | `virt_cca: true` |
+| Agent 插件 | `plugins` 中 `name: "cca"` 的条目启用，`name: "virt_cca"` 的条目禁用 | `plugins` 中 `name: "cca"` 的条目禁用，`name: "virt_cca"` 的条目启用 |
 | 策略模板 | `cca.rego` | `vcca.rego` |
 | gen_policy.py | `gen_policy.py <jwt>`（默认） | `gen_policy.py --type vcca <jwt>` |
 | JWT 字段路径 | `cca.realm_token` | `virt_cca.realm_token` |

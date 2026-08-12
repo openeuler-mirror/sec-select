@@ -129,10 +129,10 @@ High-level flow:
 
 ### Attestation Flow
 
-1. An ephemeral RSA-4096 key pair is generated
+1. An ephemeral EC P-256 key pair is generated
 2. `rbc-cli challenge` fetches a nonce from RBS
-3. `rbc-cli collect-evidence` gathers TEE evidence (containing REM/RIM values) signed with the attester key
-4. `rbc-cli get-resource` submits evidence to RBS; RBS evaluates the OPA/Rego policy against the evidence
+3. `rbc-cli collect-evidence` gathers TEE evidence containing REM/RIM values and binds the ephemeral public key to the evidence
+4. `rbc-cli get-resource` submits the evidence to RBS; the corresponding private key is used to process the returned resource after policy validation
 5. If the policy matches (all REM/RIM values equal the predefined baseline), RBS releases the LUKS passphrase
 6. `cryptsetup luksOpen` unlocks the volume using the passphrase
 

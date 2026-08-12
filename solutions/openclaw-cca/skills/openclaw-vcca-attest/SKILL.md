@@ -33,9 +33,9 @@ export RBS_BASE_URL=https://your-rbs-host   # 必填
 ### 步骤一：生成临时密钥对
 
 ```bash
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+openssl ecparam -name prime256v1 -genkey \
     -out /tmp/oc-attester-priv.pem 2>/dev/null
-openssl pkey -in /tmp/oc-attester-priv.pem \
+openssl ec -in /tmp/oc-attester-priv.pem \
     -pubout -out /tmp/oc-attester-pub.pem 2>/dev/null
 ```
 

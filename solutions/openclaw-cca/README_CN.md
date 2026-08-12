@@ -129,10 +129,10 @@ sudo make install
 
 ### 证明流程
 
-1. 生成临时 RSA-4096 密钥对
+1. 生成临时 EC P-256 密钥对
 2. `rbc-cli challenge` 向 RBS 请求挑战随机数（nonce）
-3. `rbc-cli collect-evidence` 采集含 REM/RIM 值的 TEE evidence，以 attester 私钥签名
-4. `rbc-cli get-resource` 提交 evidence 至 RBS；RBS 以 OPA/Rego 策略评估 evidence
+3. `rbc-cli collect-evidence` 采集含 REM/RIM 值的 TEE evidence，并将临时公钥绑定到 evidence
+4. `rbc-cli get-resource` 提交 evidence 至 RBS；策略验证通过后，使用对应私钥处理返回的资源
 5. 策略匹配通过（所有 REM/RIM 值与基线一致），RBS 下发 LUKS 口令
 6. `cryptsetup luksOpen` 使用口令解锁加密卷
 
