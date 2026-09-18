@@ -32,14 +32,14 @@ describe("resolveSecafsConfig", () => {
   it("defaults mountRoot under XDG_STATE_HOME when set", () => {
     const cfg = resolveSecafsConfig(
       { pluginConfig: {} },
-      { XDG_STATE_HOME: "/home/kou/.local/state" },
+      { XDG_STATE_HOME: "/home/agent/.local/state" },
     );
-    expect(cfg.mountRoot).toBe("/home/kou/.local/state/secafs/mounts");
+    expect(cfg.mountRoot).toBe("/home/agent/.local/state/secafs/mounts");
   });
 
   it("falls back to $HOME/.local/state/secafs/mounts when XDG_STATE_HOME absent", () => {
-    const cfg = resolveSecafsConfig({ pluginConfig: {} }, { HOME: "/home/kou" });
-    expect(cfg.mountRoot).toBe("/home/kou/.local/state/secafs/mounts");
+    const cfg = resolveSecafsConfig({ pluginConfig: {} }, { HOME: "/home/agent" });
+    expect(cfg.mountRoot).toBe("/home/agent/.local/state/secafs/mounts");
   });
 
   it("accepts mountRoot override", () => {

@@ -12,17 +12,34 @@
 // Then open http://127.0.0.1:8090 and connect the frontend to ws://127.0.0.1:8090.
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { extname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, extname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const OPENCLAW_DIR = process.env.OPENCLAW_DIR || "/home/kou/projects/openclaw_secafs/openclaw";
+// Resolve deploy paths relative to this file rather than to an absolute
+// dev-box path: the bridge has to work from any checkout and any cwd.
+// frontend/ is a fixed in-repo sibling of bridge/; the openclaw checkout
+// sits beside the secafs one (<workspace>/{openclaw,secafs}) per the
+// integration README.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const OPENCLAW_DIR =
+  process.env.OPENCLAW_DIR || join(HERE, "..", "..", "..", "..", "openclaw");
 const GATEWAY_URL = process.env.GATEWAY_URL || "ws://127.0.0.1:18789";
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || "";
-const FRONTEND_DIR =
-  process.env.FRONTEND_DIR ||
-  "/home/kou/projects/openclaw_secafs/secafs/integrations/openclaw/frontend";
+const FRONTEND_DIR = process.env.FRONTEND_DIR || join(HERE, "..", "frontend");
 const PORT = Number(process.env.PORT || 8090);
+
+// Without this the server still logs "http+ws on ..." while every page
+// request 404s -- a silent failure that reads as a network or auth
+// problem from the browser side.
+if (!existsSync(join(FRONTEND_DIR, "index.html"))) {
+  console.error(
+    `[secafs-bridge] FATAL: no index.html under ${FRONTEND_DIR}\n` +
+      "  point FRONTEND_DIR at <secafs>/integrations/openclaw/frontend",
+  );
+  process.exit(1);
+}
 
 // The bridge lives outside the openclaw checkout, so resolve openclaw's runtime
 // + ws by absolute file URL (their transitive deps still resolve from inside
