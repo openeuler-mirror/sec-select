@@ -31,7 +31,7 @@ This directory:
 |---|---|
 | `plugin/` | The external `secafs-chat` OpenClaw plugin (TypeScript). |
 | `frontend/` | `SecAFS Console` — a dependency-free single-page gateway client. |
-| `bridge/` | `run-stack.sh` (daemon + gateway in one userns), `bridge.mjs` (browser↔gateway proxy + static server), `secafs-ns.sh` (inspect FUSE mounts from the host). |
+| `bridge/` | `run-stack.sh` (daemon + gateway + Console bridge in one userns), `bridge.mjs` (browser↔gateway proxy + static server), `secafs-ns.sh` (inspect FUSE mounts from the host). |
 | `INTEGRATION.md` | Architecture notes (gateway-client form; Path C). |
 | `RUNBOOK.md` | Copy-paste command sequence (defers concepts to this README). |
 | `docs/secafs-rollback.md` | Rollback design notes. |
@@ -246,32 +246,43 @@ docker compose -f docker-compose.dev.yml --profile opengauss up -d opengauss
 
 ---
 
-## 6. Bring up daemon + gateway
+## 6. Bring up the stack
 
 ```bash
 cd <workspace>/secafs/integrations/openclaw/bridge
-bash run-stack.sh          # daemon + gateway inside one `unshare --user --map-root-user --mount`
+bash run-stack.sh          # daemon + gateway + Console bridge in one `unshare --user --map-root-user --mount`
 ```
 
-`run-stack.sh` env overrides (defaults shown): `SECAFS_BIN_DIR`,
+`run-stack.sh` derives every path from its own location, so it needs no
+environment at all. Overrides (defaults shown): `SECAFS_BIN_DIR`,
 `OPENCLAW_DIR`, `PG_URL`, `SOCK=~/.secafs/run/secafs.sock`,
-`MOUNT_ROOT=~/.secafs/mounts`. It **supervises the daemon** (respawns on crash;
-sweeps stale FUSE mountpoints first), so a daemon death self-recovers.
+`MOUNT_ROOT=~/.secafs/mounts`, `BRIDGE_PORT=8090`. It **supervises the daemon**
+(respawns on crash; sweeps stale FUSE mountpoints first), so a daemon death
+self-recovers, and it starts the Console bridge unless `BRIDGE_PORT` is already
+being served.
 
 Wait for `[secafs-chat] plugin registered` and `gateway ready` in the output.
 
 ---
 
-## 7. Start the bridge + open the console
+## 7. Open the console
+
+Step 6 already started the bridge. Open **http://127.0.0.1:8090**.
+
+To bounce *only* the bridge, without restarting daemon + gateway:
 
 ```bash
 cd <workspace>/secafs/integrations/openclaw/bridge
+pkill -f "node bridge.mjs"
 OPENCLAW_DIR=<workspace>/openclaw \
 GATEWAY_TOKEN=$(node -e "console.log(require(require('os').homedir()+'/.openclaw/openclaw.json').gateway.auth.token)") \
 PORT=8090 node bridge.mjs
 ```
 
-Open **http://127.0.0.1:8090**. URL is prefilled `ws://127.0.0.1:8090`, token
+`FRONTEND_DIR` needs no value — `bridge.mjs` resolves the frontend relative to
+itself, and refuses to start if it isn't there.
+
+On the page the URL is prefilled `ws://127.0.0.1:8090`, token
 blank → **Connect** → status should read `connected · read+write`.
 
 ---

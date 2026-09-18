@@ -24,15 +24,16 @@ ln -sf /usr/lib/x86_64-linux-gnu/liblzma.so.5 ~/.local/secafs-buildlibs/liblzma.
 # 4. openGauss
 ( cd "$WS/secafs" && docker compose -f docker-compose.dev.yml --profile opengauss up -d opengauss )
 
-# 5. daemon + gateway (one userns) — leave running
+# 5. daemon + gateway + Console bridge (one userns) — leave running
 ( cd "$WS/secafs/integrations/openclaw/bridge" && nohup bash run-stack.sh > /tmp/secafs-stack.log 2>&1 & )
 #    wait for "[secafs-chat] plugin registered" and "gateway ready" in /tmp/secafs-stack.log
+#    the bridge starts with it on BRIDGE_PORT (default 8090) — no separate step
 
-# 6. bridge + static frontend — leave running
-( cd "$WS/secafs/integrations/openclaw/bridge" && \
-  OPENCLAW_DIR="$WS/openclaw" \
-  GATEWAY_TOKEN=$(node -e "console.log(require(require('os').homedir()+'/.openclaw/openclaw.json').gateway.auth.token)") \
-  PORT=8090 nohup node bridge.mjs > /tmp/secafs-bridge.log 2>&1 & )
+# 6. (only to bounce the bridge alone, e.g. after rotating the gateway token)
+# ( cd "$WS/secafs/integrations/openclaw/bridge" && pkill -f "node bridge.mjs" && \
+#   OPENCLAW_DIR="$WS/openclaw" \
+#   GATEWAY_TOKEN=$(node -e "console.log(require(require('os').homedir()+'/.openclaw/openclaw.json').gateway.auth.token)") \
+#   PORT=8090 nohup node bridge.mjs > /tmp/secafs-bridge.log 2>&1 & )
 
 # 7. open the console
 echo "http://127.0.0.1:8090   (ws://127.0.0.1:8090, blank token → Connect)"
