@@ -1,13 +1,14 @@
-/// Real FUSE mount backend that wires RPC dispatch to actual FUSE mounts.
-///
-/// Each mounted volume is tracked by a `FuseMountHandle` that wraps a
-/// `BackgroundSession`. Dropping the handle unmounts the FUSE filesystem
-/// (via the `Mount` Drop impl in the fuser shim). The backend also owns a
-/// `ConnectionPool` for calling `volume::ensure` and `volume::destroy`.
-///
-/// Linux-only: FUSE is not available on macOS.
 #[cfg(target_os = "linux")]
 pub mod linux {
+    //! Real FUSE mount backend that wires RPC dispatch to actual FUSE mounts.
+    //!
+    //! Each mounted volume is tracked by a `FuseMountHandle` that wraps a
+    //! `BackgroundSession`. Dropping the handle unmounts the FUSE filesystem
+    //! (via the `Mount` Drop impl in the fuser shim). The backend also owns a
+    //! `ConnectionPool` for calling `volume::ensure` and `volume::destroy`.
+    //!
+    //! Linux-only: FUSE is not available on macOS.
+
     use std::collections::HashMap;
     use std::path::Path;
     use std::sync::Arc;
@@ -149,7 +150,18 @@ pub mod linux {
                 });
                 clients.push(Arc::new(client));
             }
-            let pool = ConnectionPool::with_backend(clients, backend);
+            // A reconnected management connection must come back with the
+            // same trigger GUCs the initial ones are given below, or the next
+            // `volume::ensure` on it raises "unrecognized configuration
+            // parameter".
+            let healer = Arc::new(secafs_sdk::db::PoolHealer::new(
+                driver_url.clone(),
+                vec![
+                    "SET secafs.volume_id = '__init__'".to_string(),
+                    "SET secafs.suppress_undo = 'true'".to_string(),
+                ],
+            ));
+            let pool = ConnectionPool::with_healer(clients, backend, healer);
 
             // OpenGauss requires the v0.6 trigger GUCs to exist on every
             // session that may write to a triggered table — initialize_schema
@@ -227,7 +239,7 @@ pub mod linux {
         /// Open a fresh `ConnectionPool` with `self.mount_pool_size` connections.
         /// Used by `mount()` to create a dedicated per-volume pool so that setting
         /// `secafs.volume_id` on those connections does not affect the shared pool.
-        async fn open_mount_pool(&self) -> anyhow::Result<ConnectionPool> {
+        async fn open_mount_pool(&self, volume_id: &str) -> anyhow::Result<ConnectionPool> {
             let (driver_url, backend) = split_url_backend(&self.pg_url);
             let mut clients = Vec::with_capacity(self.mount_pool_size);
             for _ in 0..self.mount_pool_size {
@@ -241,7 +253,24 @@ pub mod linux {
                 });
                 clients.push(Arc::new(client));
             }
-            Ok(ConnectionPool::with_backend(clients, backend))
+            // FUSE I/O runs on this pool. A connection the server closes
+            // (openGauss `session_timeout`, restart, network drop) used to stay
+            // in the pool forever, so every readdir that round-robined onto it
+            // returned EAGAIN and the workspace rendered empty — intermittently,
+            // since only part of the pool was dead. Reconnecting must replay the
+            // per-volume GUCs that `set_volume_id_guc` puts on the initial
+            // connections, or the undo triggers fail on the next write instead.
+            let healer = Arc::new(secafs_sdk::db::PoolHealer::new(
+                driver_url,
+                vec![
+                    format!(
+                        "SET secafs.volume_id = '{}'",
+                        volume_id.replace('\'', "''")
+                    ),
+                    "SET secafs.suppress_undo = 'false'".to_string(),
+                ],
+            ));
+            Ok(ConnectionPool::with_healer(clients, backend, healer))
         }
     }
 
@@ -261,7 +290,7 @@ pub mod linux {
 
             // Open a dedicated pool for this mount so the GUC we set below
             // does not bleed into the shared pool used for management ops.
-            let mount_pool = self.open_mount_pool().await?;
+            let mount_pool = self.open_mount_pool(id).await?;
 
             // `start_background_mount` is synchronous (spawns an OS thread),
             // so use spawn_blocking to avoid stalling the async executor.

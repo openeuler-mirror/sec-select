@@ -235,14 +235,25 @@ docker compose -f docker-compose.dev.yml --profile opengauss up -d opengauss
   `restart: unless-stopped`.
 - `scripts/opengauss-init.sql` makes the `secafs` role **SYSADMIN** and creates
   the `secafs` db, so schema init works on first use with no extra grants.
-- **Optional hardening:** openGauss defaults to `session_timeout=10min`, which
-  closes the daemon's idle connections. The daemon now **self-heals** (rebuilds
-  its pool on a dead connection), so this is no longer required, but to avoid the
-  reconnect entirely:
+- **Recommended.** openGauss defaults to `session_timeout=10min`, which closes
+  the daemon's idle connections. Both pools — the management one and each
+  mount's dedicated FUSE I/O pool — now reopen a connection the server has
+  closed, on the next op that lands on it (`postgres pool slot N reopened
+  after the server closed it` in the log), so the timeout no longer breaks
+  anything. Turning it off still avoids a reconnect every idle period:
   ```bash
   docker exec secafs-opengauss-1 bash -lc \
     "su - omm -c 'gs_guc reload -D /var/lib/opengauss/data -c \"session_timeout=0\"'"
   ```
+  This persists in `.dev-ogdata/postgresql.conf` across container restarts.
+  Note it is read when a session opens, so a `reload` only affects connections
+  opened afterwards — existing ones keep the value they started with.
+
+  Before the pools self-healed, a dropped FUSE connection stayed in the pool
+  and turned into `EAGAIN` on every readdir that round-robined onto it, so the
+  workspace rendered as `empty workspace` *intermittently* (one dead connection
+  out of two failed ~50% of reads). If you see that, you are running a daemon
+  built before this fix.
 
 ---
 
@@ -350,7 +361,8 @@ authoritative).
 | `missing scope: operator.admin` | Bridge connection lacks admin. Re-run the device-scope seeding (step 4). |
 | `WorkspaceVanishedError … workspace appears to have disappeared` | The volume was unmounted out-of-band and OpenClaw's attestation check fired before the auto-mount hook. The mount-keeper (`idleScanSeconds`) remounts within a tick; the console also auto-reopens + retries. If persistent, click the session to reopen it. |
 | Agent writes land in `~/.openclaw/workspace`, not the mount | Path C didn't apply — the canonical session entry must exist before the workspace override, and `spawnedCwd` must be written to all key forms. Rebuild the plugin (`npm run build`) and restart the gateway. |
-| `mount failed: volume::ensure failed` (repeatedly) | The daemon lost its DB connection (e.g. openGauss restart). It self-heals on the next op now; if it doesn't, restart `run-stack.sh`. See the optional `session_timeout=0` hardening (step 5). |
+| `mount failed: volume::ensure failed` (repeatedly) | The daemon lost its DB connection (e.g. openGauss restart). The pool reopens it on the next op; if it doesn't, restart `run-stack.sh`. |
+| `FILES` panel shows `empty workspace` on and off; `ls` on the mount gives `Resource temporarily unavailable` (EAGAIN) | Dead connections in that mount's FUSE pool, from a daemon built before the pools self-healed. Note `secafs.v1.ping` still reports `pgConnected: true` — it only probes the management pool, so the daemon looks healthy while FUSE I/O is broken. Rebuild the daemon; to recover a running one, remount the session (`secafs.v1.unmount` then `secafs.v1.mount` — `mount` alone short-circuits on the mount-table entry and keeps the dead pool). |
 | `mkdir failed: File exists` on remount | A dead daemon left a disconnected FUSE mountpoint. The daemon lazy-detaches these on mount and `run-stack.sh` sweeps them on respawn; if stuck, `./secafs-ns.sh umount -l ~/.secafs/mounts/<id>`. |
 | Long-running processes die when a shell exits | Launch detached (`nohup … &`). `run-stack.sh` keeps daemon+gateway together. |
 | `GS_PASSWORD has expired or does not meet complexity requirements` (openGauss) | openGauss enforces a password policy: at least 8 chars, with upper + lower + digit + a special char (`!@#$`). Note that `_` is **not** counted as a special character in 6.0. Pick a compliant password (e.g. `Secafs!123`). |
