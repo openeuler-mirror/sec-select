@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::db::{DbConn, DbPool};
+use crate::db::{DbConn, DbPool, PoolHealer};
 use crate::error::Result;
 use crate::DatabaseBackend;
 
@@ -24,6 +24,20 @@ impl ConnectionPool {
     ) -> Self {
         Self {
             inner: Arc::new(DbPool::with_backend(clients, backend)),
+        }
+    }
+
+    /// Pool that reopens a connection when the server closes it, instead of
+    /// handing out a dead one. `healer` carries the DSN plus the SQL that has
+    /// to be replayed on a fresh connection (the per-volume GUCs for a mount
+    /// pool) — see `PoolHealer`.
+    pub fn with_healer(
+        clients: Vec<Arc<tokio_postgres::Client>>,
+        backend: DatabaseBackend,
+        healer: Arc<PoolHealer>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(DbPool::with_healer(clients, backend, healer)),
         }
     }
 

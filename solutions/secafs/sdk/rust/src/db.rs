@@ -4,7 +4,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
 use tokio_postgres::types::ToSql;
+use tokio_postgres::NoTls;
 
 #[derive(Debug, Clone)]
 pub enum DbValue {
@@ -306,64 +309,181 @@ impl<'a> DbTransaction<'a> {
     }
 }
 
+/// Back-off after a failed reconnect. Without it, a database that is actually
+/// down turns every caller landing on a dead slot into its own connect
+/// attempt — a stampede exactly when the server can least afford it.
+const RECONNECT_THROTTLE: Duration = Duration::from_secs(2);
+
+/// Everything needed to replace a dead connection in place.
+///
+/// A pool built without one keeps the original behaviour: a connection the
+/// server has closed is handed out as-is and the caller sees the failure.
+pub struct PoolHealer {
+    /// DSN in the form the driver understands (`postgres://…`); the caller
+    /// strips any `opengauss://` scheme before constructing this.
+    driver_url: String,
+    /// SQL replayed on every freshly opened connection. For a mount pool this
+    /// carries `secafs.volume_id` / `secafs.suppress_undo`: a reconnected
+    /// connection missing those GUCs makes the undo triggers fail on the next
+    /// write, so replaying them is part of making the connection usable, not
+    /// bookkeeping.
+    on_connect: Vec<String>,
+    last_failure: Mutex<Option<Instant>>,
+}
+
+impl PoolHealer {
+    pub fn new(driver_url: String, on_connect: Vec<String>) -> Self {
+        Self {
+            driver_url,
+            on_connect,
+            last_failure: Mutex::new(None),
+        }
+    }
+
+    /// Open a replacement connection and prime it with `on_connect`.
+    ///
+    /// Callers hold a slot's write lock across this await, so it must never
+    /// reach back into the pool.
+    async fn reconnect(&self) -> Result<Arc<tokio_postgres::Client>> {
+        {
+            let last = self.last_failure.lock().await;
+            if let Some(at) = *last {
+                if at.elapsed() < RECONNECT_THROTTLE {
+                    return Err(Error::Internal(
+                        "postgres reconnect throttled after a recent failure".to_string(),
+                    ));
+                }
+            }
+        }
+        match self.connect_and_prime().await {
+            Ok(client) => {
+                *self.last_failure.lock().await = None;
+                Ok(client)
+            }
+            Err(e) => {
+                *self.last_failure.lock().await = Some(Instant::now());
+                Err(e)
+            }
+        }
+    }
+
+    async fn connect_and_prime(&self) -> Result<Arc<tokio_postgres::Client>> {
+        let (client, connection) = tokio_postgres::connect(&self.driver_url, NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::error!("postgres connection dropped: {e}");
+            }
+        });
+        for sql in &self.on_connect {
+            client.batch_execute(sql).await?;
+        }
+        Ok(Arc::new(client))
+    }
+}
+
 pub struct DbPool {
-    clients: Vec<Arc<tokio_postgres::Client>>,
+    /// One lock per slot: a single dead connection only blocks the callers
+    /// that round-robin onto it, not the whole pool.
+    slots: Vec<RwLock<Arc<tokio_postgres::Client>>>,
     rr: AtomicUsize,
     backend: DatabaseBackend,
+    healer: Option<Arc<PoolHealer>>,
 }
 
 impl DbPool {
     pub fn new(clients: Vec<Arc<tokio_postgres::Client>>) -> Self {
-        Self {
-            clients,
-            rr: AtomicUsize::new(0),
-            backend: DatabaseBackend::Postgres,
-        }
+        Self::build(clients, DatabaseBackend::Postgres, None)
     }
 
     pub fn with_backend(
         clients: Vec<Arc<tokio_postgres::Client>>,
         backend: DatabaseBackend,
     ) -> Self {
+        Self::build(clients, backend, None)
+    }
+
+    /// Pool that reopens a connection when the server closes it (idle
+    /// timeout, restart, network drop) instead of handing out a dead one.
+    pub fn with_healer(
+        clients: Vec<Arc<tokio_postgres::Client>>,
+        backend: DatabaseBackend,
+        healer: Arc<PoolHealer>,
+    ) -> Self {
+        Self::build(clients, backend, Some(healer))
+    }
+
+    fn build(
+        clients: Vec<Arc<tokio_postgres::Client>>,
+        backend: DatabaseBackend,
+        healer: Option<Arc<PoolHealer>>,
+    ) -> Self {
         Self {
-            clients,
+            slots: clients.into_iter().map(RwLock::new).collect(),
             rr: AtomicUsize::new(0),
             backend,
+            healer,
         }
     }
 
     pub async fn get_connection(&self) -> Result<DbConn> {
-        if self.clients.is_empty() {
+        if self.slots.is_empty() {
             return Err(Error::Internal(
                 "postgres client pool is empty".to_string(),
             ));
         }
-        let idx = self.rr.fetch_add(1, Ordering::Relaxed) % self.clients.len();
-        let client = Arc::clone(&self.clients[idx]);
-        Ok(DbConn {
-            client,
-            backend: self.backend,
-        })
+        let idx = self.rr.fetch_add(1, Ordering::Relaxed) % self.slots.len();
+        self.acquire(idx).await
     }
 
     /// Return the number of connections in the pool.
     pub fn len(&self) -> usize {
-        self.clients.len()
+        self.slots.len()
     }
 
     /// Return a `DbConn` wrapping the connection at slot `index` (no
     /// round-robin increment). Used by `ConnectionPool::set_volume_id_guc` to
     /// reach every underlying connection exactly once.
     pub async fn get_connection_at(&self, index: usize) -> Result<DbConn> {
-        if self.clients.is_empty() {
+        if self.slots.is_empty() {
             return Err(Error::Internal(
                 "postgres client pool is empty".to_string(),
             ));
         }
-        let idx = index % self.clients.len();
-        let client = Arc::clone(&self.clients[idx]);
+        let idx = index % self.slots.len();
+        self.acquire(idx).await
+    }
+
+    /// Hand out slot `idx`, reopening its connection first if the server
+    /// closed it.
+    async fn acquire(&self, idx: usize) -> Result<DbConn> {
+        // Fast path: a live connection costs one uncontended read lock.
+        {
+            let slot = self.slots[idx].read().await;
+            if !slot.is_closed() {
+                return Ok(DbConn {
+                    client: Arc::clone(&slot),
+                    backend: self.backend,
+                });
+            }
+        }
+        let Some(healer) = self.healer.as_ref() else {
+            // No reconnect context (tests, one-shot tools): keep the original
+            // behaviour and let the caller observe the dead connection.
+            let slot = self.slots[idx].read().await;
+            return Ok(DbConn {
+                client: Arc::clone(&slot),
+                backend: self.backend,
+            });
+        };
+        // Slow path: exactly one writer replaces the slot; whoever queued
+        // behind it re-checks and reuses what that writer installed.
+        let mut slot = self.slots[idx].write().await;
+        if slot.is_closed() {
+            *slot = healer.reconnect().await?;
+            tracing::info!("postgres pool slot {idx} reopened after the server closed it");
+        }
         Ok(DbConn {
-            client,
+            client: Arc::clone(&slot),
             backend: self.backend,
         })
     }
